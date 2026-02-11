@@ -2,11 +2,11 @@
 
 A comprehensive benchmarking and diagnostics suite for high-performance computing (HPC) systems. Runs hardware discovery, GPU/CPU/network/storage benchmarks, and produces structured JSON results plus a markdown report.
 
-**Version:** 1.7 (see [VERSION](VERSION))
+**Version:** 1.8 (see [VERSION](VERSION))
 
 ## Features
 
-- **Bootstrap** — Detects OS and hardware, installs dependencies (jq, dmidecode, DCGM, NCCL, InfiniBand tools, etc.), optional `--check-only` for dry-run
+- **Bootstrap** — Detects OS and hardware, installs dependencies (jq, dmidecode, DCGM, NCCL, InfiniBand tools, Boost for nvbandwidth when GPU present, etc.), optional `--check-only` for dry-run
 - **Discovery & inventory** — CPU, GPU, topology, network, BMC, software audit
 - **Benchmarks** — DCGM diagnostics, GPU burn-in, NCCL tests, NVLink bandwidth, STREAM, storage (fio), HPL (CPU/GPU), InfiniBand tests
 - **Diagnostics** — Network, filesystem, thermal/power, security scan
@@ -17,10 +17,10 @@ Results are written as JSON per module and can be consumed by the bundled report
 ## Requirements
 
 - **OS:** Linux (tested on Ubuntu and RHEL/CentOS)
-- **Privilege:** Root (or sudo) for bootstrap and full suite
-- **Tools:** `jq`, `bash` 4+, optional: NVIDIA driver/CUDA, DCGM, NCCL, InfiniBand stack, Docker (for HPL-MxP)
+- **Privilege:** Root (or sudo) for bootstrap and full suite. Non-root runs are supported: results go to `$HOME/.local/var/hpc-bench/results` and root-only modules (bootstrap, bmc-inventory) are skipped.
+- **Tools:** `jq` (1.6+), `bash` (4+), `python3` (required by several helpers in `lib/common.sh`). Optional: NVIDIA driver/CUDA, DCGM, NCCL, InfiniBand stack, Docker (for HPL-MxP).
 
-Bootstrap will attempt to install core packages when run as root with network access; use `--check-only` to see what’s missing without installing.
+Bootstrap will attempt to install core packages when run as root with network access; use `--check-only` to see what’s missing without installing. When GPUs are detected, Boost (libboost-dev / boost-devel) is also installed to improve nvbandwidth build-from-source; nvbandwidth can still skip on some distros and is non-fatal.
 
 ## Target environment
 
@@ -40,9 +40,22 @@ sudo bash scripts/run-all.sh
 
 # Or run in quick mode (short benchmarks: tiny HPL, 3s GPU burn, DCGM r1 only, etc.) to verify the suite end-to-end:
 sudo bash scripts/run-all.sh --quick
+
+# Or smoke mode (bootstrap + inventory + report only, no benchmarks; under ~1 min):
+sudo bash scripts/run-all.sh --smoke
 ```
 
-Results go to `/var/log/hpc-bench/results/` by default (override with `HPC_RESULTS_DIR`). See **Viewing results** below for where to find the report and logs.
+**Run on a remote host (single command):**
+
+```bash
+rsync -az --exclude .git /path/to/hpc-bench user@host:/tmp/hpc-bench
+ssh user@host 'cd /tmp/hpc-bench && sudo ./scripts/run-all.sh --quick'
+# Then fetch the report and archive:
+scp user@host:/var/log/hpc-bench/results/report.md .
+scp user@host:/var/log/hpc-bench/results/hpc-bench-*.tar.gz .
+```
+
+Results go to `/var/log/hpc-bench/results/` by default when run as root (override with `HPC_RESULTS_DIR`). When run as non-root, results go to `$HOME/.local/var/hpc-bench/results`. See **Viewing results** below for where to find the report and logs.
 
 ## Viewing results
 
@@ -53,7 +66,7 @@ Results go to `/var/log/hpc-bench/results/` by default (override with `HPC_RESUL
 | **Quick summary** — human-readable report | **`report.md`** (at the root of the results folder). Open this first for pass/fail, scores, and key numbers. |
 | **Per-module JSON** — machine-readable results | One file per module: `bootstrap.json`, `gpu-burn.json`, `dcgm-diag.json`, `run-all.json`, etc., in the same folder. |
 | **Logs** — if you need to debug or inspect stdout | **`logs/`** subfolder: e.g. `logs/gpu-burn-stdout.log`, `logs/dcgm-diag.log`, `logs/fio-seq-read.log`. |
-| **Portable bundle** — to copy off the server | A timestamped tarball in the results folder: `hpc-bench-<hostname>-<timestamp>.tar.gz` (contains all JSON, report, and logs). |
+| **Portable bundle** — to copy off the server | A timestamped tarball in the results folder: `hpc-bench-<hostname>-<timestamp>.tar.gz` (contains all JSON, report, and logs). Transfer with `scp` or `rsync`, e.g. `scp user@host:$HPC_RESULTS_DIR/hpc-bench-*.tar.gz .` or `rsync -av user@host:$HPC_RESULTS_DIR/ ./results/`. |
 
 **Example (default path):**
 
@@ -107,8 +120,9 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 | `HPC_LOG_DIR` | `$HPC_RESULTS_DIR/logs` | Module log files |
 | `HPC_WORK_DIR` | `/tmp/hpc-bench-work` | Build and temporary working files |
 | `MAX_MODULE_TIME` | `1800` | Timeout in seconds per module in `run-all.sh` |
-| `HPC_KEEP_TOOLS` | `0` | Set to `1` to skip cleanup of built tools in work dir |
+| `HPC_KEEP_TOOLS` | `0` | Set to `1` to keep gpu-burn, nccl-tests, STREAM builds in work dir; subsequent runs skip rebuilds (faster iteration). |
 | `HPC_QUICK` | *(unset)* | Set to `1` or use `run-all.sh --quick` for quick benchmark mode: short runs (DCGM r1 only, 3s GPU burn, tiny HPL, short NCCL/STREAM/fio) to verify the suite end-to-end |
+| `HPC_SMOKE` | *(unset)* | Set by `run-all.sh --smoke`: run only bootstrap, discovery/inventory, and report (no benchmarks); under ~1 min for “did it install and detect?” |
 
 ## Repository layout
 
@@ -164,13 +178,13 @@ Config: [.pre-commit-config.yaml](.pre-commit-config.yaml). ShellCheck is skippe
 
 ## Concurrency and locking
 
-`run-all.sh` uses an exclusive lock file at `$HPC_RESULTS_DIR/.hpc-bench.lock`. If another run is in progress, it exits with code 2. Remove the lock file only if you are sure no other instance is running.
+`run-all.sh` uses an exclusive lock file at `$HPC_RESULTS_DIR/.hpc-bench.lock`. If another run is in progress, it exits immediately with **exit code 2** (another instance is running). Do not remove the lock file unless you have confirmed no other `run-all.sh` is still running (e.g. check `ps` or ask other users). If the lock is stale (e.g. after a crash), you can remove it: `rm $HPC_RESULTS_DIR/.hpc-bench.lock`.
 
 ## Exit codes (run-all.sh)
 
 - **0** — All modules passed; report may still show warnings (conditional pass).
 - **1** — One or more modules failed (acceptance gate).
-- **2** — Another instance is running (lock held).
+- **2** — Another instance is running (lock held). Wait for it to finish or remove the lock only after confirming no other instance is running.
 
 ## License
 

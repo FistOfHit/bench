@@ -17,6 +17,15 @@ bash scripts/gpu-burn.sh
 
 ## Version History
 
+### V1.8 Changes (2026-02-11)
+
+1. **run-all.sh** — `--smoke` flag: bootstrap + discovery + report only (no benchmarks); Phase 1 (discovery) runs in parallel; skipped modules show short reason (`.note`/`.skip_reason`) in checklist.
+2. **User-level mode** — When not root, results default to `$HOME/.local/var/hpc-bench/results`; bootstrap and bmc-inventory are skipped.
+3. **GPU count consistency** — thermal-power now derives `gpu_count` from gpu-inventory or nvidia-smi (single source); report uses gpu-inventory with bootstrap fallback.
+4. **Report** — Primary storage line (benchmarked device or from inventory); skip reasons in scorecard Notes; SSH PasswordAuthentication remediation hint when security-scan reports it.
+5. **report-common.sh** — SKIP modules show `.skip_reason` or `.note` in scorecard.
+6. **README** — Remote-run example (rsync + ssh); jq 1.6+, Bash 4+, python3; archive transfer (scp/rsync); exit code 2 and lock doc; `--smoke` and `HPC_KEEP_TOOLS` doc.
+
 ### V1.7 Changes (2026-02-11)
 
 **Quick benchmark mode for end-to-end verification.**
@@ -25,6 +34,7 @@ bash scripts/gpu-burn.sh
 2. **Benchmark quick-mode behavior:** DCGM: level 1 (r1) only, 90s timeout. GPU burn: 3s (override with `GPU_BURN_DURATION`). HPL-MxP: tiny problem (N=2048, NB=128), 120s timeout. HPL-CPU: tiny N=10000, NB=128, **30s timeout** (skip fast if container not ready). NCCL: **one test** (all_reduce_perf), **8B–1M** range, 1 iter, 45s timeout. STREAM: 1M elements, 3 iterations, 60s run timeout. Storage: **2 fio profiles** (seq-read, rand-4k-read), **5s** each (not 7×15s). nvbandwidth: 60s timeout per test.
 3. **README** — Quick start documents `run-all.sh --quick`; env table documents `HPC_QUICK` for full quick-mode description.
 4. **VERSION** — Bumped to 1.7.
+5. **VM validation (2026-02-11):** Full suite `run-all.sh --quick` run on remote VM (Ubuntu 24.04, 8× H100 PCIe, KVM): 16 passed, 5 skipped (bmc-inventory, hpl-cpu, hpl-mxp, ib-tests, nvbandwidth), 0 failed; report and archive OK. Optional: install Boost in bootstrap when GPU present to improve nvbandwidth build-from-source (README).
 
 ### V1.6 Changes (2026-02-11)
 

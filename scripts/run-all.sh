@@ -8,14 +8,20 @@ source "$(dirname "$0")/../lib/common.sh"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Parse flags
+HPC_SMOKE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --quick)
             export HPC_QUICK=1
             shift
             ;;
+        --smoke)
+            HPC_SMOKE=1
+            export HPC_QUICK=1
+            shift
+            ;;
         *)
-            log_warn "Unknown option: $1 (use --quick for quick benchmark mode)"
+            log_warn "Unknown option: $1 (use --quick or --smoke)"
             shift
             ;;
     esac
@@ -44,7 +50,9 @@ fi
 # Lock acquired — fd 9 held until process exits
 
 log_info "================================================================"
-if [ "${HPC_QUICK:-0}" = "1" ]; then
+if [ "${HPC_SMOKE:-0}" = "1" ]; then
+    log_info "  HPC Bench Suite v${HPC_BENCH_VERSION} — Smoke (bootstrap + inventory + report)"
+elif [ "${HPC_QUICK:-0}" = "1" ]; then
     log_info "  HPC Bench Suite v${HPC_BENCH_VERSION} — Quick Run (short benchmarks)"
 else
     log_info "  HPC Bench Suite v${HPC_BENCH_VERSION} — Full Run"
@@ -62,6 +70,15 @@ TOTAL=0
 PASSED=0
 FAILED=0
 SKIPPED=0
+
+# Get short skip/note reason from module JSON for display
+get_skip_reason() {
+    local name="$1"
+    local j="${HPC_RESULTS_DIR}/${name}.json"
+    if [ -f "$j" ]; then
+        jq -r 'if .skip_reason then .skip_reason elif .note then .note else empty end' "$j" 2>/dev/null | head -c 60
+    fi
+}
 
 run_module() {
     local script="$1"
@@ -81,7 +98,13 @@ run_module() {
     if [ $rc -eq 0 ]; then
         # Check if module emitted "skipped" status
         if [ -f "${HPC_RESULTS_DIR}/${name}.json" ] && jq -e '.status == "skipped"' "${HPC_RESULTS_DIR}/${name}.json" &>/dev/null; then
-            MODULE_STATUS[$name]="SKIPPED (${mod_duration}s)"
+            local reason
+            reason=$(get_skip_reason "$name")
+            if [ -n "$reason" ]; then
+                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s): $reason"
+            else
+                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s)"
+            fi
             SKIPPED=$((SKIPPED + 1))
             log_warn "[$name] SKIPPED (${mod_duration}s)"
         else
@@ -100,43 +123,113 @@ run_module() {
     fi
 }
 
+# ── User-level mode: when not root, skip root-only modules ──
+HPC_IS_ROOT=0
+[ "$(id -u)" -eq 0 ] && HPC_IS_ROOT=1
+if [ "$HPC_IS_ROOT" -eq 0 ]; then
+    log_warn "Running as non-root: results in ${HPC_RESULTS_DIR}; bootstrap and bmc-inventory skipped."
+fi
+
 # ═══════════════════════════════════════════
-# PHASE 0: Bootstrap
+# PHASE 0: Bootstrap (requires root)
 # ═══════════════════════════════════════════
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 0: Bootstrap                  ║"
 log_info "╚══════════════════════════════════════╝"
-run_module "${SCRIPT_DIR}/bootstrap.sh"
+if [ "$HPC_IS_ROOT" -eq 1 ]; then
+    run_module "${SCRIPT_DIR}/bootstrap.sh"
+else
+    TOTAL=$((TOTAL + 1))
+    MODULE_STATUS[bootstrap]="SKIPPED (0s): requires root"
+    SKIPPED=$((SKIPPED + 1))
+    log_warn "[bootstrap] SKIPPED (requires root)"
+    # Emit minimal bootstrap.json so report has hostname/results_dir (optional)
+    jq -n --arg h "$(hostname)" --arg r "${HPC_RESULTS_DIR}" '{hostname: $h, results_dir: $r, status: "skipped", note: "requires root"}' | emit_json "bootstrap" "skipped" 2>/dev/null || true
+fi
 
 # ═══════════════════════════════════════════
-# PHASE 1: Discovery & Inventory
+# PHASE 1: Discovery & Inventory (parallel)
 # ═══════════════════════════════════════════
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 1: Discovery & Inventory      ║"
 log_info "╚══════════════════════════════════════╝"
-for script in inventory.sh gpu-inventory.sh topology.sh network-inventory.sh bmc-inventory.sh software-audit.sh; do
-    run_module "${SCRIPT_DIR}/${script}"
+PHASE1_SCRIPTS=(inventory.sh gpu-inventory.sh topology.sh network-inventory.sh software-audit.sh)
+[ "$HPC_IS_ROOT" -eq 1 ] && PHASE1_SCRIPTS=(inventory.sh gpu-inventory.sh topology.sh network-inventory.sh bmc-inventory.sh software-audit.sh)
+_phase1_pids=()
+_phase1_names=()
+for script in "${PHASE1_SCRIPTS[@]}"; do
+    name=$(basename "$script" .sh)
+    TOTAL=$((TOTAL + 1))
+    echo ""
+    log_info "━━━ [$TOTAL] Running: $name ━━━"
+    (
+        mod_start=$(date +%s)
+        timeout "$MAX_MODULE_TIME" bash "${SCRIPT_DIR}/${script}" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
+        rc=${PIPESTATUS[0]:-$?}
+        mod_end=$(date +%s)
+        echo "$rc $((mod_end - mod_start))" > "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
+    ) &
+    _phase1_pids+=($!)
+    _phase1_names+=("$name")
+done
+for i in "${!_phase1_pids[@]}"; do
+    wait "${_phase1_pids[$i]}"
+    name="${_phase1_names[$i]}"
+    rc=0
+    mod_duration=0
+    if [ -f "${HPC_RESULTS_DIR}/.phase1_${name}.meta" ]; then
+        read -r rc mod_duration < "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
+        rm -f "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
+    fi
+    if [ "$rc" -eq 0 ]; then
+        if [ -f "${HPC_RESULTS_DIR}/${name}.json" ] && jq -e '.status == "skipped"' "${HPC_RESULTS_DIR}/${name}.json" &>/dev/null; then
+            reason=$(get_skip_reason "$name")
+            if [ -n "$reason" ]; then
+                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s): $reason"
+            else
+                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s)"
+            fi
+            SKIPPED=$((SKIPPED + 1))
+            log_warn "[$name] SKIPPED (${mod_duration}s)"
+        else
+            MODULE_STATUS[$name]="OK (${mod_duration}s)"
+            PASSED=$((PASSED + 1))
+            log_ok "[$name] OK (${mod_duration}s)"
+        fi
+    elif [ "$rc" -eq 137 ]; then
+        MODULE_STATUS[$name]="TIMEOUT (${MAX_MODULE_TIME}s limit)"
+        FAILED=$((FAILED + 1))
+        log_error "[$name] TIMEOUT after ${MAX_MODULE_TIME}s"
+    else
+        MODULE_STATUS[$name]="FAILED rc=$rc (${mod_duration}s)"
+        FAILED=$((FAILED + 1))
+        log_error "[$name] FAILED with rc=$rc (${mod_duration}s)"
+    fi
 done
 
 # ═══════════════════════════════════════════
-# PHASE 2: Benchmarks
+# PHASE 2: Benchmarks (skipped in smoke mode)
 # ═══════════════════════════════════════════
+if [ "${HPC_SMOKE:-0}" != "1" ]; then
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 2: Benchmarks                 ║"
 log_info "╚══════════════════════════════════════╝"
 for script in dcgm-diag.sh gpu-burn.sh nccl-tests.sh nvbandwidth.sh stream-bench.sh storage-bench.sh hpl-cpu.sh hpl-mxp.sh ib-tests.sh; do
     run_module "${SCRIPT_DIR}/${script}"
 done
+fi
 
 # ═══════════════════════════════════════════
-# PHASE 3: Diagnostics
+# PHASE 3: Diagnostics (skipped in smoke mode)
 # ═══════════════════════════════════════════
+if [ "${HPC_SMOKE:-0}" != "1" ]; then
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 3: Diagnostics                ║"
 log_info "╚══════════════════════════════════════╝"
 for script in network-diag.sh filesystem-diag.sh thermal-power.sh security-scan.sh; do
     run_module "${SCRIPT_DIR}/${script}"
 done
+fi
 
 # ═══════════════════════════════════════════
 # PHASE 4: Report Generation

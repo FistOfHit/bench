@@ -32,7 +32,10 @@ score_module() {
 
     case "$status" in
         ok|pass) score="PASS" ;;
-        skipped) score="SKIP"; note="Not applicable or missing hardware" ;;
+        skipped)
+            score="SKIP"
+            note=$(jq -r 'if .skip_reason then .skip_reason elif .note then .note else "Not applicable or missing hardware" end' "${HPC_RESULTS_DIR}/${mod}.json" 2>/dev/null) || note="Not applicable or missing hardware"
+            ;;
         error|fail) score="FAIL"; note="Module errored" ;;
         warn) score="WARN" ;;
         missing) score="SKIP"; note="Not executed" ;;

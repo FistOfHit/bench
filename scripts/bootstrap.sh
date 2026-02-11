@@ -242,6 +242,13 @@ fi
 if [ "$HAS_INTERNET" = true ]; then
     has_cmd git || pkg_install git 2>/dev/null || true
     has_cmd cmake || pkg_install cmake 2>/dev/null || true
+    # Optional: Boost for nvbandwidth build-from-source
+    if [ "$HAS_GPU" = true ]; then
+        case "$PKG_MGR" in
+            apt) pkg_install libboost-dev 2>/dev/null || log_warn "Boost install failed (nvbandwidth may skip)" ;;
+            dnf|yum) pkg_install boost-devel 2>/dev/null || log_warn "Boost install failed (nvbandwidth may skip)" ;;
+        esac
+    fi
 fi
 
 # ── Compiler pre-flight ──

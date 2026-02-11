@@ -9,7 +9,13 @@ export LC_TIME=C LC_NUMERIC=C LC_COLLATE=C LANG="${LANG:-C.UTF-8}"
 
 # ── Paths ──
 export HPC_BENCH_ROOT="${HPC_BENCH_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-export HPC_RESULTS_DIR="${HPC_RESULTS_DIR:-/var/log/hpc-bench/results}"
+if [ -z "${HPC_RESULTS_DIR:-}" ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+        export HPC_RESULTS_DIR="/var/log/hpc-bench/results"
+    else
+        export HPC_RESULTS_DIR="${HOME:-/tmp}/.local/var/hpc-bench/results"
+    fi
+fi
 export HPC_LOG_DIR="${HPC_LOG_DIR:-${HPC_RESULTS_DIR}/logs}"
 export HPC_WORK_DIR="${HPC_WORK_DIR:-/tmp/hpc-bench-work}"
 export HPC_SPECS_FILE="${HPC_BENCH_ROOT}/specs/hardware-specs.json"

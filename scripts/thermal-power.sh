@@ -100,6 +100,19 @@ if [ "$VIRT_TYPE" = "none" ] && has_cmd ipmitool; then
     ' 2>/dev/null || echo "[]")
 fi
 
+# ── GPU count from single source (gpu-inventory or nvidia-smi) for report consistency ──
+GPU_COUNT_REPORT=0
+if [ -f "${HPC_RESULTS_DIR}/gpu-inventory.json" ]; then
+    GPU_COUNT_REPORT=$(jq -r '.gpu_count // (.gpus | length) // 0' "${HPC_RESULTS_DIR}/gpu-inventory.json" 2>/dev/null) || true
+fi
+if [ "${GPU_COUNT_REPORT:-0}" -eq 0 ] 2>/dev/null && has_cmd nvidia-smi; then
+    GPU_COUNT_REPORT=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
+fi
+# Fallback: length of gpu_thermals (may be limited in some VM/driver setups)
+if [ "${GPU_COUNT_REPORT:-0}" -eq 0 ] 2>/dev/null; then
+    GPU_COUNT_REPORT=$(echo "$gpu_thermal" | jq 'length' 2>/dev/null) || GPU_COUNT_REPORT=0
+fi
+
 # ── Assess thermal health ──
 thermal_status="ok"
 # Check if any GPU is above 85°C
@@ -117,12 +130,14 @@ RESULT=$(jq -n \
     --argjson psu "$psu_json" \
     --arg status "$thermal_status" \
     --arg hot "$hot_gpus" \
+    --argjson gpu_count "$GPU_COUNT_REPORT" \
     --argjson virt "$VIRT_INFO" \
     --arg note "$VIRT_NOTE" \
     '{
         thermal_status: $status,
         gpu_thermals: $gpu,
         gpu_throttle_status: $throttle,
+        gpu_count: $gpu_count,
         hot_gpus_above_85c: ($hot | tonumber),
         cpu_thermals: $cpu,
         fans: $fans,
@@ -133,4 +148,4 @@ RESULT=$(jq -n \
 
 echo "$RESULT" | emit_json "thermal-power" "$thermal_status"
 log_ok "Thermal assessment: $thermal_status"
-echo "$RESULT" | jq '{thermal_status, hot_gpus_above_85c, gpu_count: (.gpu_thermals|length)}'
+echo "$RESULT" | jq '{thermal_status, hot_gpus_above_85c, gpu_count}'

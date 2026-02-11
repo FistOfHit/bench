@@ -27,6 +27,11 @@ if has_result "gpu-inventory"; then
         GPU_SPEC=$(lookup_gpu_spec "$GPU_MODEL")
     fi
 fi
+# Single source: fallback to bootstrap if gpu-inventory missing (e.g. smoke run)
+if [ "${GPU_COUNT:-0}" = "0" ] && has_result "bootstrap"; then
+    GPU_COUNT=$(jf "${HPC_RESULTS_DIR}/bootstrap.json" '.gpu_count' '0')
+    [ "$GPU_MODEL" = "none" ] && GPU_MODEL=$(jf "${HPC_RESULTS_DIR}/bootstrap.json" '.gpu_model' 'none')
+fi
 
 # ── Generate Report ──
 {
@@ -148,6 +153,21 @@ if has_result "gpu-inventory" && [ "$GPU_MODEL" != "none" ]; then
         echo "- **Memory per GPU:** ${spec_mem} GB"
         echo "- **TDP:** ${spec_tdp} W"
     fi
+    echo ""
+fi
+
+# Primary storage (what was benchmarked) — one line for readers
+PRIMARY_STORAGE=""
+if has_result "storage-bench"; then
+    PRIMARY_STORAGE=$(jf "${HPC_RESULTS_DIR}/storage-bench.json" '.test_config.device' '')
+    [ -n "$PRIMARY_STORAGE" ] && PRIMARY_STORAGE="**Primary storage (benchmarked):** $PRIMARY_STORAGE"
+fi
+if [ -z "$PRIMARY_STORAGE" ] && has_result "inventory"; then
+    PRIMARY_STORAGE=$(jf "${HPC_RESULTS_DIR}/inventory.json" '.storage.devices[0].model' '')
+    [ -n "$PRIMARY_STORAGE" ] && PRIMARY_STORAGE="**Primary storage:** $PRIMARY_STORAGE (from inventory)"
+fi
+if [ -n "$PRIMARY_STORAGE" ]; then
+    echo "$PRIMARY_STORAGE"
     echo ""
 fi
 
@@ -454,6 +474,14 @@ if has_result "ib-tests"; then
     if [ "$memlock" = "warn" ]; then
         memlock_val=$(jf "${HPC_RESULTS_DIR}/ib-tests.json" '.memlock_ulimit_kb' 'N/A')
         echo "- ⚠️ **memlock ulimit:** Currently ${memlock_val} KB — should be 'unlimited' for RDMA. Set in /etc/security/limits.conf"
+        ISSUES_FOUND=true
+    fi
+fi
+
+# Security-scan: remediation hint for SSH PasswordAuthentication (show when warning present, even if overall pass)
+if has_result "security-scan"; then
+    if jq -e '.warnings[]? | select(. | test("PasswordAuth|Password"; "i"))' "${HPC_RESULTS_DIR}/security-scan.json" &>/dev/null; then
+        echo "- ⚠️ **SSH PasswordAuthentication:** Set \`PasswordAuthentication no\` in sshd_config and restart sshd (e.g. \`systemctl restart sshd\`)."
         ISSUES_FOUND=true
     fi
 fi
