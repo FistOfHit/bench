@@ -150,9 +150,16 @@ for name in "${!MODULE_STATUS[@]}"; do
 done | sort
 echo "─────────────────────────────────────────"
 
-# Emit orchestrator JSON
-_start_iso=$(date -u -d "@$START_TIME" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
-_end_iso=$(date -u -d "@$END_TIME" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+# Emit orchestrator JSON (portable ISO timestamps: GNU date -d not on macOS)
+_iso_utc() {
+    local ts="$1"
+    if date -u -d "@${ts}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; then
+        return
+    fi
+    perl -e 'use POSIX qw(strftime); print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(shift))' "$ts" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ
+}
+_start_iso=$(_iso_utc "$START_TIME")
+_end_iso=$(_iso_utc "$END_TIME")
 SUMMARY_JSON=$(jq -n \
     --arg host "$(hostname)" \
     --arg start_time "$_start_iso" \

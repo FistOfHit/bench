@@ -1,146 +1,22 @@
 #!/usr/bin/env bash
 # report.sh — Generate comprehensive markdown report from benchmark results
-# Can be run standalone: HPC_RESULTS_DIR=/path/to/results ./report.sh
+# Run standalone: HPC_RESULTS_DIR=/path/to/results ./report.sh
 SCRIPT_NAME="report"
 source "$(dirname "$0")/../lib/common.sh"
+source "$(dirname "$0")/../lib/report-common.sh"
 
 log_info "=== Report Generation ==="
 
 REPORT_FILE="${HPC_RESULTS_DIR}/report.md"
 SPECS_FILE="${HPC_SPECS_FILE}"
-
-# Read version from single source of truth
 HPC_BENCH_VERSION="${HPC_BENCH_VERSION:-$(cat "${HPC_BENCH_ROOT}/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")}"
 
-# ── Helper: safely read a JSON field ──
-jf() {
-    local file="$1" query="$2" default="${3:-N/A}"
-    if [ -f "$file" ]; then
-        local val
-        val=$(jq -r "$query // empty" "$file" 2>/dev/null)
-        echo "${val:-$default}"
-    else
-        echo "$default"
-    fi
-}
-
-# ── Helper: check if module result exists ──
-has_result() { [ -f "${HPC_RESULTS_DIR}/${1}.json" ]; }
-
-# ── Helper: get module status ──
-mod_status() { jf "${HPC_RESULTS_DIR}/${1}.json" '.status' 'missing'; }
-
-# ── Collect data ──
 HOSTNAME=$(jf "${HPC_RESULTS_DIR}/bootstrap.json" '.hostname' "$(hostname)")
 RUN_DATE=$(jf "${HPC_RESULTS_DIR}/run-all.json" '.start_time' "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
 DURATION=$(jf "${HPC_RESULTS_DIR}/run-all.json" '.duration' 'standalone run')
 
-# ── Scorecard logic ──
-# Returns PASS/WARN/FAIL for each module
-declare -A SCORES
-declare -A SCORE_NOTES
+run_report_scoring
 
-score_module() {
-    local mod="$1" score="PASS" note=""
-    local status
-    status=$(mod_status "$mod")
-
-    case "$status" in
-        ok|pass) score="PASS" ;;
-        skipped) score="SKIP"; note="Not applicable or missing hardware" ;;
-        error|fail) score="FAIL"; note="Module errored" ;;
-        warn) score="WARN" ;;
-        missing) score="SKIP"; note="Not executed" ;;
-        *) score="UNKNOWN"; note="Unrecognized status: $status" ;;
-    esac
-
-    # Module-specific scoring
-    case "$mod" in
-        hpl-cpu)
-            if [ "$score" = "PASS" ]; then
-                local passed
-                passed=$(jf "${HPC_RESULTS_DIR}/hpl-cpu.json" '.passed' 'false')
-                if [ "$passed" != "true" ]; then
-                    score="FAIL"; note="HPL residual check failed"
-                fi
-            fi
-            ;;
-        ib-tests)
-            if [ "$score" = "PASS" ]; then
-                local memlock
-                memlock=$(jf "${HPC_RESULTS_DIR}/ib-tests.json" '.memlock_check' 'ok')
-                if [ "$memlock" = "warn" ]; then
-                    score="WARN"; note="memlock ulimit too low for optimal RDMA"
-                fi
-            fi
-            ;;
-        dcgm-diag)
-            if [ "$score" = "PASS" ]; then
-                local overall
-                overall=$(jf "${HPC_RESULTS_DIR}/dcgm-diag.json" '.overall' 'N/A')
-                if [ "$overall" = "Fail" ] || [ "$overall" = "FAIL" ]; then
-                    score="FAIL"; note="DCGM diagnostic reported failures"
-                elif [ "$overall" = "Warn" ] || [ "$overall" = "WARN" ]; then
-                    score="WARN"; note="DCGM diagnostic reported warnings"
-                fi
-            fi
-            ;;
-        security-scan)
-            if [ "$score" = "PASS" ]; then
-                local sec_status
-                sec_status=$(jf "${HPC_RESULTS_DIR}/security-scan.json" '.status' 'pass')
-                if [ "$sec_status" = "warn" ]; then
-                    local warn_count
-                    warn_count=$(jf "${HPC_RESULTS_DIR}/security-scan.json" '.warnings | length' '0')
-                    score="WARN"; note="${warn_count} security warnings"
-                elif [ "$sec_status" = "fail" ]; then
-                    score="FAIL"; note="Security scan failed"
-                fi
-            fi
-            ;;
-        thermal-power)
-            if [ "$score" = "PASS" ]; then
-                local hot_gpus thermal_st
-                thermal_st=$(jf "${HPC_RESULTS_DIR}/thermal-power.json" '.thermal_status' 'ok')
-                hot_gpus=$(jf "${HPC_RESULTS_DIR}/thermal-power.json" '.hot_gpus_above_85c' '0')
-                if [ "$thermal_st" = "fail" ]; then
-                    score="FAIL"; note="Active thermal throttling detected"
-                elif [ "$thermal_st" = "warn" ] || [ "${hot_gpus:-0}" -gt 0 ] 2>/dev/null; then
-                    score="WARN"; note="${hot_gpus} GPU(s) above 85°C"
-                fi
-            fi
-            ;;
-    esac
-
-    SCORES[$mod]="$score"
-    SCORE_NOTES[$mod]="$note"
-}
-
-# Score all modules
-ALL_MODULES=(bootstrap inventory gpu-inventory topology network-inventory bmc-inventory software-audit
-             dcgm-diag gpu-burn nccl-tests nvbandwidth stream-bench storage-bench hpl-cpu hpl-mxp ib-tests
-             network-diag filesystem-diag thermal-power security-scan)
-
-for mod in "${ALL_MODULES[@]}"; do
-    score_module "$mod"
-done
-
-# Count scores
-PASS_COUNT=0; WARN_COUNT=0; FAIL_COUNT=0; SKIP_COUNT=0
-for mod in "${ALL_MODULES[@]}"; do
-    case "${SCORES[$mod]}" in
-        PASS) PASS_COUNT=$((PASS_COUNT + 1)) ;;
-        WARN) WARN_COUNT=$((WARN_COUNT + 1)) ;;
-        FAIL) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
-        SKIP) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
-    esac
-done
-
-OVERALL="PASS"
-if [ "$WARN_COUNT" -gt 0 ]; then OVERALL="WARN"; fi
-if [ "$FAIL_COUNT" -gt 0 ]; then OVERALL="FAIL"; fi
-
-# ── GPU spec lookup for performance analysis ──
 GPU_MODEL="none"
 GPU_COUNT=0
 GPU_SPEC="{}"

@@ -85,12 +85,12 @@ SAFE_JSON_EOF
 detect_virtualization() {
     local virt_type="none"
     local virt_details=""
-    
+
     # Check systemd-detect-virt first
     if has_cmd systemd-detect-virt; then
         virt_type=$(systemd-detect-virt 2>/dev/null || echo "none")
     fi
-    
+
     # Fallback checks
     if [ "$virt_type" = "none" ]; then
         if [ -d /proc/xen ]; then
@@ -112,12 +112,12 @@ detect_virtualization() {
             esac
         fi
     fi
-    
+
     # Check if running in container
     if [ -f /.dockerenv ] || grep -qE 'docker|containerd' /proc/1/cgroup 2>/dev/null; then
         virt_details="container"
     fi
-    
+
     echo "{\"type\": \"$virt_type\", \"details\": \"$virt_details\"}"
 }
 
@@ -302,10 +302,10 @@ do_cleanup() {
 trap do_cleanup EXIT
 
 # ── Nvidia helpers ──
-gpu_count() { 
+gpu_count() {
     nvidia-smi --query-gpu=count --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d '[:space:]' || echo 0
 }
-gpu_model() { 
+gpu_model() {
     local raw
     raw=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
     # Aggressive sanitization: strip control chars, trim, remove "unknown" suffix artifacts
@@ -318,25 +318,25 @@ nvlink_status() {
         echo '{"available": false, "links": []}'
         return
     fi
-    
+
     local nvlink_info
     nvlink_info=$(nvidia-smi nvlink --status_query 2>/dev/null || echo "")
-    
+
     if [ -z "$nvlink_info" ] || echo "$nvlink_info" | grep -q "not supported"; then
         echo '{"available": false, "links": []}'
         return
     fi
-    
+
     # Parse nvlink status - count active links per GPU
     local link_count=0
     local gpu_count
     gpu_count=$(gpu_count)
-    
+
     for ((i=0; i<gpu_count; i++)); do
         local gpu_links
         gpu_links=$(nvidia-smi nvlink -i "$i" --status_query 2>/dev/null | grep -c "NVLink" || echo 0)
         link_count=$((link_count + gpu_links))
     done
-    
+
     echo "{\"available\": true, \"total_links\": $link_count, \"gpus\": $gpu_count}"
 }

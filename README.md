@@ -76,8 +76,10 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 ```
 ├── VERSION              # Single source of truth for version (e.g. 1.4)
 ├── README.md            # This file
+├── .pre-commit-config.yaml   # Optional lint/pre-commit hooks
 ├── lib/
-│   └── common.sh        # Shared bash helpers (logging, JSON, GPU spec lookup, etc.)
+│   ├── common.sh        # Shared bash helpers (logging, JSON, GPU spec lookup, etc.)
+│   └── report-common.sh # Report helpers and scorecard logic (used by report.sh)
 ├── scripts/             # Executable modules
 │   ├── bootstrap.sh     # Bootstrap and dependency install
 │   ├── run-all.sh       # Master orchestrator (all phases)
@@ -108,6 +110,18 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
     ├── gpu-burn/         # GPU burn-in (CUDA)
     └── nccl-tests/       # Minimal NCCL test binaries
 ```
+
+## Linting and pre-commit
+
+Optional: run [pre-commit](https://pre-commit.com/) to enforce trailing-whitespace removal, end-of-file newlines, YAML/JSON checks, and [ShellCheck](https://www.shellcheck.net/) on shell scripts.
+
+```bash
+pipx install pre-commit   # or: python3 -m venv .venv && source .venv/bin/activate && pip install pre-commit
+pre-commit install       # hook runs on git commit
+pre-commit run --all-files   # run once on entire repo
+```
+
+Config: [.pre-commit-config.yaml](.pre-commit-config.yaml). ShellCheck is skipped for `src/` (C/CUDA build trees).
 
 ## Concurrency and locking
 
