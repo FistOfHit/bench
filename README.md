@@ -6,7 +6,7 @@ A comprehensive benchmarking and diagnostics suite for high-performance computin
 
 ## Features
 
-- **Bootstrap** — Detects OS and hardware, installs dependencies (jq, dmidecode, DCGM, NCCL, InfiniBand tools, Boost for nvbandwidth when GPU present, etc.), optional `--check-only` for dry-run
+- **Bootstrap** — Detects OS and hardware, installs dependencies (jq, curl, dmidecode, DCGM, NCCL, InfiniBand tools, Boost for nvbandwidth when GPU present, etc.). Use `--check-only` for a dry-run. On Ubuntu with an NVIDIA GPU, use `--install-nvidia` to install the NVIDIA driver and CUDA toolkit (internet required; reboot after driver install).
 - **Discovery & inventory** — CPU, GPU, topology, network, BMC, software audit
 - **Benchmarks** — DCGM diagnostics, GPU burn-in, NCCL tests, NVLink bandwidth, STREAM, storage (fio), HPL (CPU/GPU), InfiniBand tests
 - **Diagnostics** — Network, filesystem, thermal/power, security scan
@@ -18,9 +18,9 @@ Results are written as JSON per module and can be consumed by the bundled report
 
 - **OS:** Linux (tested on Ubuntu and RHEL/CentOS)
 - **Privilege:** Root (or sudo) for bootstrap and full suite. Non-root runs are supported: results go to `$HOME/.local/var/hpc-bench/results` and root-only modules (bootstrap, bmc-inventory) are skipped.
-- **Tools:** `jq` (1.6+), `bash` (4+), `python3` (required by several helpers in `lib/common.sh`). Optional: NVIDIA driver/CUDA, DCGM, NCCL, InfiniBand stack, Docker (for HPL-MxP).
+- **Tools:** `jq` (1.6+), `bash` (4+), `python3` (required by several helpers in `lib/common.sh`). Bootstrap installs jq when missing. Optional: NVIDIA driver/CUDA, DCGM, NCCL, InfiniBand stack, Docker (for HPL-MxP).
 
-Bootstrap will attempt to install core packages when run as root with network access; use `--check-only` to see what’s missing without installing. When GPUs are detected, Boost (libboost-dev / boost-devel) is also installed to improve nvbandwidth build-from-source; nvbandwidth can still skip on some distros and is non-fatal.
+Bootstrap installs jq and other core packages when run as root with network access; use `--check-only` to see what’s missing without installing. When GPUs are detected, Boost (libboost-dev / boost-devel) is also installed to improve nvbandwidth build-from-source; nvbandwidth can still skip on some distros and is non-fatal. **Installing NVIDIA stack:** On a fresh Ubuntu system with an NVIDIA GPU, run `sudo bash scripts/bootstrap.sh --install-nvidia`. Internet is required. After the driver is installed, reboot and run bootstrap again (with or without `--install-nvidia`) to complete CUDA toolkit, DCGM, and NCCL setup.
 
 ## Target environment
 
@@ -34,6 +34,9 @@ cd /path/to/hpc-bench
 
 # 1. Bootstrap (install dependencies, detect hardware) — requires root
 sudo bash scripts/bootstrap.sh
+
+# On fresh Ubuntu with an NVIDIA GPU, install driver + CUDA (internet required; reboot after driver install, then run bootstrap again):
+#   sudo bash scripts/bootstrap.sh --install-nvidia
 
 # 2. Run full suite (all phases: bootstrap, inventory, benchmarks, diagnostics, report)
 sudo bash scripts/run-all.sh

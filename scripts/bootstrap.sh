@@ -2,19 +2,33 @@
 # bootstrap.sh — Entry point: detect hardware, install missing tools, set up environment
 # Idempotent — safe to run multiple times
 SCRIPT_NAME="bootstrap"
+
+# ── Parse flags (before sourcing common.sh) ──
+CHECK_ONLY=false
+INSTALL_NVIDIA=false
+for arg in "$@"; do
+    case "$arg" in
+        --check-only) CHECK_ONLY=true ;;
+        --install-nvidia) INSTALL_NVIDIA=true ;;
+    esac
+done
+
+# ── Ensure jq so common.sh and rest of bootstrap can run (root + package manager only) ──
+if [ "$(id -u)" -eq 0 ] && ! command -v jq &>/dev/null; then
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq 2>/dev/null; apt-get install -y jq 2>/dev/null || true
+    elif command -v dnf &>/dev/null; then
+        dnf install -y jq 2>/dev/null || true
+    elif command -v yum &>/dev/null; then
+        yum install -y jq 2>/dev/null || true
+    fi
+fi
+
 source "$(dirname "$0")/../lib/common.sh"
 
 # ── Detect virtualization early ──
 VIRT_INFO=$(detect_virtualization)
 VIRT_TYPE=$(echo "$VIRT_INFO" | jq -r '.type')
-
-# ── Parse flags ──
-CHECK_ONLY=false
-for arg in "$@"; do
-    case "$arg" in
-        --check-only) CHECK_ONLY=true ;;
-    esac
-done
 
 log_info "=== HPC Bench Bootstrap ==="
 log_info "Host: $(hostname), Date: $(date -u)"
@@ -43,17 +57,17 @@ if [ "$CHECK_ONLY" = false ] && [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ── Core tools list ──
-CORE_TOOLS=(jq bc dmidecode lshw pciutils util-linux numactl hwloc smartmontools ethtool sysstat)
+CORE_TOOLS=(jq bc curl dmidecode lshw pciutils util-linux numactl hwloc smartmontools ethtool sysstat)
 case "$PKG_MGR" in
     apt)
-        CORE_TOOLS+=(ipmitool fio net-tools build-essential linux-tools-common)
+        CORE_TOOLS+=(gnupg ipmitool fio net-tools build-essential linux-tools-common)
         KVER=$(uname -r)
         if [ "$CHECK_ONLY" = false ] && apt-cache show "linux-tools-${KVER}" &>/dev/null; then
             CORE_TOOLS+=("linux-tools-${KVER}")
         fi
         ;;
     dnf|yum)
-        CORE_TOOLS+=(ipmitool fio net-tools gcc gcc-c++ make kernel-tools perf)
+        CORE_TOOLS+=(gnupg2 ipmitool fio net-tools gcc gcc-c++ make kernel-tools perf)
         ;;
 esac
 
@@ -157,7 +171,13 @@ else
     log_info "Skipping package installation (no internet). Checking existing tools..."
 fi
 
-# ── NVIDIA tools check ──
+# ── NVIDIA GPU detection (PCI: no driver required) ──
+NVIDIA_GPU_PRESENT=false
+if lspci 2>/dev/null | grep -qi 'nvidia\|10de'; then
+    NVIDIA_GPU_PRESENT=true
+fi
+
+# ── NVIDIA tools check (driver working) ──
 HAS_GPU=false
 if has_cmd nvidia-smi; then
     if nvidia-smi &>/dev/null; then
@@ -172,7 +192,35 @@ if has_cmd nvidia-smi; then
         log_warn "nvidia-smi found but not working — driver issue?"
     fi
 else
-    log_warn "nvidia-smi not found — no NVIDIA GPU support"
+    if [ "$NVIDIA_GPU_PRESENT" = true ]; then
+        log_warn "nvidia-smi not found — NVIDIA GPU present but driver not installed"
+    else
+        log_warn "nvidia-smi not found — no NVIDIA GPU support"
+    fi
+fi
+
+# ── --install-nvidia: install driver when GPU present but no working driver (Ubuntu, internet required) ──
+if [ "$INSTALL_NVIDIA" = true ] && [ "$NVIDIA_GPU_PRESENT" = true ] && [ "$HAS_GPU" = false ] && [ "$HAS_INTERNET" = true ] && [ "$PKG_MGR" = "apt" ]; then
+    log_info "Installing NVIDIA driver (--install-nvidia, Ubuntu)..."
+    # Add NVIDIA CUDA repo for driver + toolkit
+    if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
+        DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/3bf863cc.pub"
+        curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
+        echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/ /" \
+            > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
+        apt-get update 2>/dev/null || true
+    fi
+    if apt-get install -y nvidia-driver-535 2>/dev/null; then
+        log_ok "NVIDIA driver installed."
+        echo ""
+        echo "  Reboot required for the driver to load. After reboot, run:"
+        echo "    sudo bash scripts/bootstrap.sh --install-nvidia"
+        echo "  Then run the full suite as usual."
+        echo ""
+        exit 0
+    else
+        log_warn "NVIDIA driver install failed (try: apt-get install -y nvidia-driver-535)"
+    fi
 fi
 
 # ── DCGM ──
@@ -198,6 +246,26 @@ if [ "$HAS_GPU" = true ] && ! has_cmd dcgmi && [ "$HAS_INTERNET" = true ]; then
     esac
     if has_cmd nv-hostengine; then
         nv-hostengine 2>/dev/null || true
+    fi
+fi
+
+# ── CUDA toolkit (nvcc) when driver works but nvcc missing (Ubuntu: from same repo as DCGM) ──
+if [ "$HAS_GPU" = true ] && [ "$HAS_INTERNET" = true ] && ! command -v nvcc &>/dev/null && [ "$PKG_MGR" = "apt" ]; then
+    log_info "Installing CUDA toolkit (nvcc) for GPU benchmarks..."
+    if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
+        DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/3bf863cc.pub"
+        curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
+        echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/ /" \
+            > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
+        apt-get update 2>/dev/null || true
+    fi
+    # Prefer cuda-toolkit-12-2 for broad compatibility; fallback to 12-0
+    if apt-get install -y cuda-toolkit-12-2 2>/dev/null; then
+        log_ok "CUDA toolkit installed (cuda-toolkit-12-2)"
+    elif apt-get install -y cuda-toolkit-12-0 2>/dev/null; then
+        log_ok "CUDA toolkit installed (cuda-toolkit-12-0)"
+    else
+        log_warn "CUDA toolkit install failed — gpu-burn/nccl-tests may need nvcc; ensure PATH includes /usr/local/cuda/bin"
     fi
 fi
 
