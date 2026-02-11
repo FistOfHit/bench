@@ -17,6 +17,14 @@ bash scripts/gpu-burn.sh
 
 ## Version History
 
+### V1.5 Changes (2026-02-11)
+
+**VM validation and results archive fix.**
+
+1. **scripts/run-all.sh** — Results archive no longer fails with "file changed as we read it": archive is built from a temporary snapshot copy of the results directory, then the snapshot is removed. Ensures a consistent tarball when the log file or other outputs are still being written.
+2. **Full suite validated on a remote VM** (Ubuntu 24.04, 8× A100-SXM4-80GB passthrough, KVM): 21 modules, 15 passed, 6 skipped (bmc-inventory, dcgm-diag, hpl-cpu, hpl-mxp, ib-tests, nvbandwidth), 0 failed; report and archive generated successfully.
+3. **VERSION** — Bumped to 1.5.
+
 ### V1.4 Changes (2026-02-11)
 
 **VM testing, NCCL parsing, HPL-MxP SIGPIPE, and quick mode.**

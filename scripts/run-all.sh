@@ -188,18 +188,20 @@ ARCHIVE_NAME="hpc-bench-$(hostname)-$(date +%Y%m%dT%H%M%S).tar.gz"
 ARCHIVE_PATH="${HPC_RESULTS_DIR}/${ARCHIVE_NAME}"
 
 log_info "Bundling results archive..."
-# Archive all JSON, report, and logs into a single portable file
+# Copy results to a temp snapshot so tar does not see "file changed as we read it"
 _archive_err=$(mktemp)
-if tar czf "$ARCHIVE_PATH" \
-    -C "$(dirname "$HPC_RESULTS_DIR")" \
-    "$(basename "$HPC_RESULTS_DIR")" \
-    2>"$_archive_err"; then
-    log_ok "Results archive: $ARCHIVE_PATH"
-    log_info "  Transfer with: scp ${ARCHIVE_PATH} user@host:/path/"
+_archive_snap=$(mktemp -d)
+if cp -a "$HPC_RESULTS_DIR" "$_archive_snap/"; then
+    if tar czf "$ARCHIVE_PATH" -C "$_archive_snap" "$(basename "$HPC_RESULTS_DIR")" 2>"$_archive_err"; then
+        log_ok "Results archive: $ARCHIVE_PATH"
+        log_info "  Transfer with: scp ${ARCHIVE_PATH} user@host:/path/"
+    else
+        log_warn "Failed to create results archive (non-fatal): $(cat "$_archive_err" 2>/dev/null | head -3)"
+    fi
 else
-    log_warn "Failed to create results archive (non-fatal): $(cat "$_archive_err" 2>/dev/null | head -3)"
+    log_warn "Failed to snapshot results for archive (non-fatal)"
 fi
-rm -f "$_archive_err"
+rm -rf "$_archive_snap" "$_archive_err"
 
 # ═══════════════════════════════════════════
 # Acceptance Gate
