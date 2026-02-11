@@ -1,0 +1,48 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.ptx
+gpu_burn
+compare.ptx
+stream
+stream_c
+xhpl
+HPL.dat
+build/
+*.exe
+
+# NCCL tests build output
+src/nccl-tests/build/
+
+# GPU-burn build output (when built in-tree)
+src/gpu-burn/gpu_burn
+src/gpu-burn/compare.ptx
+
+# Runtime / results (if run with results inside repo)
+results/
+logs/
+*.log
+.hpc-bench.lock
+hpc-bench-*.tar.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+.eggs/
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Local overrides (do not commit)
+.env
+.env.local
+*.local

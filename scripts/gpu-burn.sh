@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# gpu-burn.sh — GPU stress test using gpu-burn (V1.1)
+# Fixed: Output capture, error handling, cleanup ordering
+SCRIPT_NAME="gpu-burn"
+source "$(dirname "$0")/../lib/common.sh"
+
+log_info "=== GPU Burn Stress Test ==="
+
+if ! has_cmd nvidia-smi; then
+    echo '{"note":"no nvidia-smi"}' | emit_json "gpu-burn" "skipped"
+    exit 0
+fi
+
+BURN_DURATION=${GPU_BURN_DURATION:-300}  # 5 minutes default
+BURN_DIR="${HPC_WORK_DIR}/gpu-burn"
+
+# ── Pre-burn temps ──
+pre_temps=$(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]')
+
+# ── Build gpu-burn if needed ──
+if [ ! -x "${BURN_DIR}/gpu_burn" ]; then
+    log_info "Building gpu-burn..."
+
+    # Prefer bundled source in src/gpu-burn/
+    BUNDLED_BURN="${HPC_BENCH_ROOT}/src/gpu-burn"
+    if [ -f "${BUNDLED_BURN}/Makefile" ]; then
+        log_info "Using bundled gpu-burn source"
+        rm -rf "$BURN_DIR"
+        cp -r "$BUNDLED_BURN" "$BURN_DIR"
+    else
+        log_warn "Bundled gpu-burn source not found, trying git clone..."
+        rm -rf "$BURN_DIR"
+        if ! git clone https://github.com/wilicc/gpu-burn.git "$BURN_DIR" 2>/dev/null; then
+            log_error "Failed to clone gpu-burn and no bundled source available"
+            echo '{"error":"source unavailable"}' | emit_json "gpu-burn" "error"
+            exit 1
+        fi
+    fi
+    cd "$BURN_DIR"
+    if ! make 2>&1 | tail -5; then
+        log_error "Failed to build gpu-burn"
+        echo '{"error":"build failed"}' | emit_json "gpu-burn" "error"
+        exit 1
+    fi
+fi
+register_cleanup "$BURN_DIR"
+
+# ── Run gpu-burn ──
+cd "$BURN_DIR"
+log_info "Running gpu-burn for ${BURN_DURATION}s..."
+
+# Capture temps during burn in background
+TEMP_LOG="${HPC_LOG_DIR}/gpu-burn-temps.csv"
+echo "timestamp,gpu,temp_c,power_w" > "$TEMP_LOG"
+(
+    while true; do
+        nvidia-smi --query-gpu=index,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]' | \
+            while IFS=', ' read -r idx temp pwr; do
+                echo "$(date +%s),$idx,$temp,$pwr" >> "$TEMP_LOG"
+            done
+        sleep 5
+    done
+) &
+TEMP_PID=$!
+
+# Run gpu_burn directly with timeout, capture stdout
+burn_output=""
+burn_output=$(timeout --signal=KILL $((BURN_DURATION + 120)) ./gpu_burn "$BURN_DURATION" 2>&1) || true
+burn_rc=$?
+
+# Kill temp monitoring
+kill "$TEMP_PID" 2>/dev/null || true
+wait "$TEMP_PID" 2>/dev/null || true
+
+log_info "gpu-burn exited with rc=$burn_rc"
+log_info "gpu-burn output length: ${#burn_output} bytes"
+
+# ── Post-burn temps ──
+post_temps=$(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]')
+
+# ── Parse results ──
+# gpu-burn signals errors with "FAULTY" per GPU. Count only gpu-burn's own output,
+# not our log wrapper lines (which contain [ERROR] etc.)
+# Reliable patterns: "GPU <N>(<desc>): FAULTY" or "GPU <N>: FAULTY"
+errors_found=$(echo "$burn_output" | grep -c "FAULTY" 2>/dev/null || echo 0)
+
+# gpu-burn prints "OK" or "FAULTY" per GPU in the final summary
+gpu_results=$(echo "$burn_output" | grep -E "GPU [0-9]+.*: (OK|FAULTY)" | tail -20)
+
+# Parse GFLOPS per GPU — use POSIX-compatible awk (no named capture groups)
+gpu_gflops=$(echo "$burn_output" | awk '
+/GPU [0-9]+.*:/ {
+    # Extract GPU index
+    match($0, /GPU ([0-9]+)/)
+    gpu_idx = substr($0, RSTART+4, RLENGTH-4) + 0
+    # Extract GFLOPS value
+    gflops = 0
+    for (i=1; i<=NF; i++) {
+        if ($(i+1) == "Gflop/s" || $(i+1) == "GFLOPS") {
+            gflops = $i + 0
+            break
+        }
+    }
+    if (gflops > 0) {
+        status = "ok"
+        if ($0 ~ /FAULTY/) status = "fail"
+        printf "{\"gpu\":%d,\"gflops\":%.1f,\"status\":\"%s\"},", gpu_idx, gflops, status
+    }
+}' | sed 's/,$//' | awk '{print "["$0"]"}')
+
+# Parse temp log for max temps per GPU
+max_temps="[]"
+max_power="[]"
+if [ -f "$TEMP_LOG" ] && [ "$(wc -l < "$TEMP_LOG")" -gt 1 ]; then
+    max_temps=$(awk -F, 'NR>1 && $3+0>0 {if($3>max[$2]) max[$2]=$3} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_temp_c\":%s}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null || echo "[]")
+    max_power=$(awk -F, 'NR>1 && $4+0>0 {if($4>max[$2]) max[$2]=$4} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_power_w\":%.1f}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null || echo "[]")
+fi
+
+status="pass"
+echo "$burn_output" | grep -qi "FAULTY" && status="fail"
+[ "$burn_rc" -eq 137 ] && status="timeout"
+
+# Validate JSON arrays
+echo "$max_temps" | jq . >/dev/null 2>&1 || max_temps="[]"
+echo "$max_power" | jq . >/dev/null 2>&1 || max_power="[]"
+echo "$gpu_gflops" | jq . >/dev/null 2>&1 || gpu_gflops="[]"
+
+RESULT=$(jq -n \
+    --arg dur "$BURN_DURATION" \
+    --arg status "$status" \
+    --argjson errors "$errors_found" \
+    --argjson max_temps "$max_temps" \
+    --argjson max_power "$max_power" \
+    --argjson gpu_gflops "$gpu_gflops" \
+    --arg pre "$pre_temps" \
+    --arg post "$post_temps" \
+    --arg results "$gpu_results" \
+    --arg raw_output "$burn_output" \
+    '{
+        duration_seconds: ($dur | tonumber),
+        status: $status,
+        errors_detected: $errors,
+        gpu_performance: $gpu_gflops,
+        max_temps: $max_temps,
+        max_power: $max_power,
+        pre_burn_temps: $pre,
+        post_burn_temps: $post,
+        gpu_results_summary: $results,
+        raw_output: ($raw_output | split("\n") | map(select(length > 0)))
+    }')
+
+echo "$RESULT" | emit_json "gpu-burn" "$status"
+log_ok "GPU burn: $status (errors: $errors_found)"
+echo "$RESULT" | jq '{status, gpu_performance, errors_detected}'
