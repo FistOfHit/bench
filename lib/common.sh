@@ -16,6 +16,13 @@ if [ -z "${HPC_RESULTS_DIR:-}" ]; then
         export HPC_RESULTS_DIR="${HOME:-/tmp}/.local/var/hpc-bench/results"
     fi
 fi
+# Prevent writing into protected system paths (e.g. HPC_RESULTS_DIR=/etc/)
+case "$HPC_RESULTS_DIR" in
+    /|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/usr/bin|/usr/bin/*|/usr/sbin|/usr/sbin/*|/boot|/boot/*|/proc|/proc/*|/sys|/sys/*)
+        echo "FATAL: HPC_RESULTS_DIR=$HPC_RESULTS_DIR is a protected path" >&2
+        exit 1
+        ;;
+esac
 export HPC_LOG_DIR="${HPC_LOG_DIR:-${HPC_RESULTS_DIR}/logs}"
 export HPC_WORK_DIR="${HPC_WORK_DIR:-/tmp/hpc-bench-work}"
 export HPC_SPECS_FILE="${HPC_BENCH_ROOT}/specs/hardware-specs.json"
@@ -49,6 +56,23 @@ emit_json() {
             '. + {module: $m, status: $s, timestamp: $t}' > "$file"
     fi
     log_info "Results written to $file"
+}
+
+# Validate JSON from stdin and emit; on invalid JSON write error record and return 1.
+# Use when piping dynamically built JSON (awk/python) to avoid corrupt output.
+emit_json_safe() {
+    local module="$1" status="$2"
+    local input
+    input=$(cat)
+    if ! echo "$input" | jq . >/dev/null 2>&1; then
+        log_error "Invalid JSON for module $module — writing error record"
+        jq -n --arg m "$module" --arg e "Invalid JSON output" \
+            '{module: $m, status: "error", error: $e}' \
+            > "${HPC_RESULTS_DIR}/${module}.json"
+        _HPC_JSON_EMITTED=true
+        return 1
+    fi
+    echo "$input" | emit_json "$module" "$status"
 }
 
 # Sanitize string for JSON - removes control characters and escapes properly
@@ -214,10 +238,8 @@ lookup_gpu_spec() {
         return
     fi
 
-    # Scored fuzzy match using python3 for robustness
-    # Prefer: longest spec key that is a substring of the model name (nvidia-smi names
-    # are typically more specific, e.g. "NVIDIA A100-SXM4-80GB" vs spec key "NVIDIA A100 SXM4 80GB").
-    # Normalise both sides (lowercase, strip hyphens/underscores) before comparing.
+    # Scored fuzzy match using python3 for robustness.
+    # Output prefix: NONE<TAB>reason = no match; WARN<TAB>json = word-overlap match (log warning); else raw json.
     result=$(jq -r '.gpus | to_entries[] | "\(.key)\t\(.value | @json)"' "$HPC_SPECS_FILE" 2>/dev/null | \
         python3 -c "
 import sys, re
@@ -228,6 +250,7 @@ model_norm = re.sub(r'[-_/\s]+', ' ', model).lower().strip()
 best_key = None
 best_score = -1
 best_val = None
+match_type = None  # 'substring' | 'word_overlap'
 
 for line in sys.stdin:
     line = line.strip()
@@ -237,34 +260,48 @@ for line in sys.stdin:
     key_norm = re.sub(r'[-_/\s]+', ' ', key).lower().strip()
 
     score = 0
-    # Check if spec key words are all in the model name
+    mtype = None
     key_words = key_norm.split()
     model_words = model_norm.split()
 
     if key_norm in model_norm:
-        # Spec key is substring of model — strong match, score by key length
         score = len(key_norm) * 10
+        mtype = 'substring'
     elif model_norm in key_norm:
-        # Model is substring of spec key — weaker match
         score = len(model_norm) * 5
+        mtype = 'substring'
     else:
-        # Word overlap scoring
         common = sum(1 for w in key_words if w in model_words)
-        if common >= 2:  # Need at least 2 words in common
+        if common >= 2:
             score = common * 3
+            mtype = 'word_overlap'
 
     if score > best_score:
         best_score = score
         best_key = key
         best_val = val
+        match_type = mtype
 
 if best_score > 0 and best_val:
-    print(best_val)
+    if match_type == 'word_overlap':
+        print('WARN\t' + best_val)
+    else:
+        print(best_val)
 else:
-    print('{}')
-" "$model" 2>/dev/null) || result='{}'
+    print('NONE')
+" "$model" 2>/dev/null) || result='NONE'
 
-    # Ensure valid JSON output (fuzzy match or jq @json can occasionally be malformed)
+    # Handle no-match: return structured object so callers can distinguish from \"spec found, value 0\"
+    if [ -n "$result" ] && [ "${result#NONE}" != "$result" ]; then
+        local reason="no spec for '${model}'"
+        jq -n --arg r "$reason" '{matched: false, reason: $r}'
+        return
+    fi
+    # Word-overlap fuzzy match: log warning then use the spec
+    if [ -n "$result" ] && [ "${result#WARN	}" != "$result" ]; then
+        log_warn "Fuzzy GPU spec match (word overlap) for \"$model\" — verify spec is correct"
+        result="${result#WARN	}"
+    fi
     if [ -z "$result" ] || [ "$result" = "null" ]; then
         result='{}'
     fi

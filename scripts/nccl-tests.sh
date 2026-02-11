@@ -168,6 +168,11 @@ peak_busbw=$(echo "$tests_output" | jq '[.[] | select(.test=="all_reduce_perf") 
 # Ensure numeric (jq may return null)
 peak_busbw=$(echo "$peak_busbw" | grep -E '^[0-9.]+$' || echo "0")
 
+if [ "$peak_busbw" = "0" ] && [ "$NGPUS" -ge 2 ]; then
+    log_warn "NCCL all_reduce busbw=0 with $NGPUS GPUs — possible parsing failure"
+    log_warn "Check nccl-tests log for output format changes"
+fi
+
 efficiency="N/A"
 if [ "$nvlink_bw" != "0" ] && [ "$nvlink_bw" != "null" ] && [ -n "$peak_busbw" ] && [ "${peak_busbw}" != "0" ]; then
     efficiency=$(echo "scale=1; $peak_busbw / $nvlink_bw * 100" | bc 2>/dev/null || echo "N/A")

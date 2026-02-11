@@ -33,9 +33,9 @@ else
 fi
 
 # ── SUID binaries ──
-# -xdev: don't cross filesystem boundaries (avoids stale NFS hangs)
-# timeout: safety net in case find still blocks on something
-_suid_out=$(timeout 30 find / -xdev -perm -4000 -type f 2>/dev/null | head -50) || true
+# Restrict to known paths to avoid unbounded scan on large filesystems (e.g. multi-TB /)
+# -xdev: don't cross filesystem boundaries; timeout: safety net
+_suid_out=$(timeout 30 find /usr /bin /sbin /opt /var -xdev -perm -4000 -type f 2>/dev/null | head -50) || true
 if [ -n "$_suid_out" ]; then
     suid_json=$(echo "$_suid_out" | jq -R . | jq -s '.') || suid_json="[]"
 else

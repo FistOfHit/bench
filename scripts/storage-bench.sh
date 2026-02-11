@@ -16,6 +16,11 @@ TEST_DIR="${FIO_TEST_DIR:-/tmp/hpc-fio-test}"
 mkdir -p "$TEST_DIR"
 register_cleanup "$TEST_DIR"
 
+if findmnt -n -o FSTYPE "$TEST_DIR" 2>/dev/null | grep -q tmpfs; then
+    log_warn "FIO_TEST_DIR=$TEST_DIR is on tmpfs — measuring RAM not disk!"
+    log_warn "Set FIO_TEST_DIR to a path on real storage for meaningful results"
+fi
+
 # Check available space
 avail_kb=$(df "$TEST_DIR" | awk 'NR==2 {print $4}')
 avail_gb=$((avail_kb / 1048576))
@@ -37,8 +42,8 @@ else
 fi
 FIO_COMMON="--directory=$TEST_DIR --size=$FIO_SIZE --runtime=$FIO_RUNTIME --time_based --group_reporting"
 
-# Placeholder for skipped profiles in quick mode (valid JSON for jq)
-FIO_PLACEHOLDER='{"read_bw_mbps":0,"read_iops":0,"read_lat_usec":0,"write_bw_mbps":0,"write_iops":0,"write_lat_usec":0}'
+# Placeholder for skipped profiles in quick mode (valid JSON for jq; report can distinguish from real zero)
+FIO_PLACEHOLDER='{"read_bw_mbps":0,"read_iops":0,"read_lat_usec":0,"write_bw_mbps":0,"write_iops":0,"write_lat_usec":0,"quick_mode_skip":true}'
 
 # ── Run fio profiles ──
 run_fio() {

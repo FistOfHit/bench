@@ -71,9 +71,10 @@ burn_output=""
 burn_output=$(timeout --signal=KILL $((BURN_DURATION + 120)) ./gpu_burn "$BURN_DURATION" 2>&1) || true
 burn_rc=$?
 
-# Kill temp monitoring
+# Kill temp monitoring; allow in-flight write to flush (avoids corrupt CSV/JSON)
 kill "$TEMP_PID" 2>/dev/null || true
 wait "$TEMP_PID" 2>/dev/null || true
+sleep 1
 
 log_info "gpu-burn exited with rc=$burn_rc"
 log_info "gpu-burn output length: ${#burn_output} bytes"
