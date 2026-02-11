@@ -26,10 +26,19 @@ else
     FIO_SIZE="4G"
 fi
 
-# Shorter run for VM/CI when HPC_QUICK=1 (default 60s per profile)
-FIO_RUNTIME=${HPC_QUICK:+15}
-FIO_RUNTIME=${FIO_RUNTIME:-60}
+# Quick mode: 5s per profile and only 2 profiles (seq-read + rand-4k-read) to verify fio fast. Full: 60s, 7 profiles.
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    FIO_RUNTIME=5
+    FIO_QUICK_PROFILES=1   # 1 = run only 2 minimal profiles
+else
+    FIO_RUNTIME=${HPC_QUICK:+15}
+    FIO_RUNTIME=${FIO_RUNTIME:-60}
+    FIO_QUICK_PROFILES=0
+fi
 FIO_COMMON="--directory=$TEST_DIR --size=$FIO_SIZE --runtime=$FIO_RUNTIME --time_based --group_reporting"
+
+# Placeholder for skipped profiles in quick mode (valid JSON for jq)
+FIO_PLACEHOLDER='{"read_bw_mbps":0,"read_iops":0,"read_lat_usec":0,"write_bw_mbps":0,"write_iops":0,"write_lat_usec":0}'
 
 # ── Run fio profiles ──
 run_fio() {
@@ -68,23 +77,23 @@ run_fio() {
     echo '{"error":"parse failed"}'
 }
 
-# Sequential read
-seq_read=$(run_fio "seq-read" --rw=read --bs=1M --iodepth=32 --numjobs=1 --direct=1)
-
-# Sequential write
-seq_write=$(run_fio "seq-write" --rw=write --bs=1M --iodepth=32 --numjobs=1 --direct=1)
-
-# Random 4K read
-rand_read=$(run_fio "rand-4k-read" --rw=randread --bs=4k --iodepth=64 --numjobs=4 --direct=1)
-
-# Random 4K write
-rand_write=$(run_fio "rand-4k-write" --rw=randwrite --bs=4k --iodepth=64 --numjobs=4 --direct=1)
-
-# Mixed random 70/30 read/write
-mixed=$(run_fio "mixed-randrw" --rw=randrw --rwmixread=70 --bs=4k --iodepth=64 --numjobs=4 --direct=1)
-
-# High queue depth sequential read
-seq_read_deep=$(run_fio "seq-read-qd128" --rw=read --bs=128k --iodepth=128 --numjobs=1 --direct=1)
+# Quick mode: run only 2 profiles (seq-read + rand-4k-read) to verify fio with minimal time
+if [ "${FIO_QUICK_PROFILES:-0}" = "1" ]; then
+    log_info "Quick mode — running 2 fio profiles (${FIO_RUNTIME}s each)"
+    seq_read=$(run_fio "seq-read" --rw=read --bs=1M --iodepth=32 --numjobs=1 --direct=1)
+    rand_read=$(run_fio "rand-4k-read" --rw=randread --bs=4k --iodepth=64 --numjobs=4 --direct=1)
+    seq_write="$FIO_PLACEHOLDER"
+    rand_write="$FIO_PLACEHOLDER"
+    mixed="$FIO_PLACEHOLDER"
+    seq_read_deep="$FIO_PLACEHOLDER"
+else
+    seq_read=$(run_fio "seq-read" --rw=read --bs=1M --iodepth=32 --numjobs=1 --direct=1)
+    seq_write=$(run_fio "seq-write" --rw=write --bs=1M --iodepth=32 --numjobs=1 --direct=1)
+    rand_read=$(run_fio "rand-4k-read" --rw=randread --bs=4k --iodepth=64 --numjobs=4 --direct=1)
+    rand_write=$(run_fio "rand-4k-write" --rw=randwrite --bs=4k --iodepth=64 --numjobs=4 --direct=1)
+    mixed=$(run_fio "mixed-randrw" --rw=randrw --rwmixread=70 --bs=4k --iodepth=64 --numjobs=4 --direct=1)
+    seq_read_deep=$(run_fio "seq-read-qd128" --rw=read --bs=128k --iodepth=128 --numjobs=1 --direct=1)
+fi
 
 # ── Detect storage type ──
 test_device=$(df "$TEST_DIR" | awk 'NR==2 {print $1}')
@@ -101,12 +110,13 @@ RESULT=$(jq -n \
     --argjson mixed "$mixed" \
     --argjson seq_deep "$seq_read_deep" \
     --arg fio_size "$FIO_SIZE" \
+    --arg fio_runtime "$FIO_RUNTIME" \
     --arg test_dir "$TEST_DIR" \
     --arg device "$test_device" \
     --arg rota "$rotational" \
     --arg sched "$scheduler" \
     '{
-        test_config: {size: $fio_size, runtime_sec: 60, test_dir: $test_dir, device: $device, rotational: $rota, scheduler: $sched},
+        test_config: {size: $fio_size, runtime_sec: ($fio_runtime | tonumber), test_dir: $test_dir, device: $device, rotational: $rota, scheduler: $sched},
         sequential_read_1M: $seq_r,
         sequential_write_1M: $seq_w,
         random_4k_read: $rand_r,

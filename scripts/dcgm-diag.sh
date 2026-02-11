@@ -12,11 +12,18 @@ if ! has_cmd dcgmi; then
 fi
 
 # In VMs, DCGM diag often hangs or is unsupported — use shorter timeout and treat failure as skip
+# Quick mode (HPC_QUICK=1): run only level 1 (r1) with short timeout to verify suite end-to-end
 DCGM_TIMEOUT=1800
-if is_virtualized; then
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    DCGM_TIMEOUT=90
+    log_info "Quick mode — DCGM level 1 only, timeout ${DCGM_TIMEOUT}s"
+elif is_virtualized; then
     DCGM_TIMEOUT=120
     log_info "Virtualized environment — using ${DCGM_TIMEOUT}s timeout per level"
 fi
+
+# Level(s) to try: quick = 1 only; full = 3 → 2 → 1
+[ "${HPC_QUICK:-0}" = "1" ] && DCGM_LEVELS="1" || DCGM_LEVELS="3 2 1"
 
 # Ensure nv-hostengine is running
 if ! pgrep -x nv-hostengine &>/dev/null; then
@@ -25,10 +32,10 @@ if ! pgrep -x nv-hostengine &>/dev/null; then
     sleep 2
 fi
 
-# Try levels 3 → 2 → 1
+# Try level(s)
 diag_output=""
 diag_level=0
-for level in 3 2 1; do
+for level in $DCGM_LEVELS; do
     log_info "Attempting DCGM diag level $level..."
     diag_output=$(run_with_timeout "$DCGM_TIMEOUT" "dcgm-diag-r${level}" dcgmi diag -r "$level" 2>&1) && {
         diag_level=$level

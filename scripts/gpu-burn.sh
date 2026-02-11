@@ -8,8 +8,10 @@ log_info "=== GPU Burn Stress Test ==="
 
 require_gpu "gpu-burn" "no nvidia-smi"
 
-# In VMs use shorter burn to avoid long timeouts; override with GPU_BURN_DURATION
-if is_virtualized; then
+# Quick mode (HPC_QUICK=1): 3s burn to verify suite; VMs: shorter; else 5 min default. Override with GPU_BURN_DURATION.
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    BURN_DURATION=${GPU_BURN_DURATION:-3}
+elif is_virtualized; then
     BURN_DURATION=${GPU_BURN_DURATION:-60}
 else
     BURN_DURATION=${GPU_BURN_DURATION:-300}  # 5 minutes default on bare metal
@@ -23,20 +25,19 @@ pre_temps=$(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,n
 if [ ! -x "${BURN_DIR}/gpu_burn" ]; then
     log_info "Building gpu-burn..."
 
-    # Prefer bundled source in src/gpu-burn/
+    # Prefer latest from online; fallback to bundled source in src/gpu-burn/
     BUNDLED_BURN="${HPC_BENCH_ROOT}/src/gpu-burn"
-    if [ -f "${BUNDLED_BURN}/Makefile" ]; then
-        log_info "Using bundled gpu-burn source"
+    rm -rf "$BURN_DIR"
+    if git clone https://github.com/wilicc/gpu-burn.git "$BURN_DIR" 2>/dev/null; then
+        log_info "Using gpu-burn from upstream (git clone)"
+    elif [ -f "${BUNDLED_BURN}/Makefile" ]; then
+        log_info "Using bundled gpu-burn source (online clone failed or offline)"
         rm -rf "$BURN_DIR"
         cp -r "$BUNDLED_BURN" "$BURN_DIR"
     else
-        log_warn "Bundled gpu-burn source not found, trying git clone..."
-        rm -rf "$BURN_DIR"
-        if ! git clone https://github.com/wilicc/gpu-burn.git "$BURN_DIR" 2>/dev/null; then
-            log_error "Failed to clone gpu-burn and no bundled source available"
-            echo '{"error":"source unavailable"}' | emit_json "gpu-burn" "error"
-            exit 1
-        fi
+        log_error "Failed to clone gpu-burn and no bundled source available"
+        echo '{"error":"source unavailable"}' | emit_json "gpu-burn" "error"
+        exit 1
     fi
     cd "$BURN_DIR"
     if ! make 2>&1 | tail -5; then

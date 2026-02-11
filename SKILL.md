@@ -17,6 +17,23 @@ bash scripts/gpu-burn.sh
 
 ## Version History
 
+### V1.7 Changes (2026-02-11)
+
+**Quick benchmark mode for end-to-end verification.**
+
+1. **run-all.sh** — `--quick` flag (or `HPC_QUICK=1`) enables quick mode: short benchmarks so the full suite finishes fast for smoke tests / VM validation. In quick mode, per-module timeout is 10 min (vs 30 min full). Banner shows "Quick Run (short benchmarks)" when active.
+2. **Benchmark quick-mode behavior:** DCGM: level 1 (r1) only, 90s timeout. GPU burn: 3s (override with `GPU_BURN_DURATION`). HPL-MxP: tiny problem (N=2048, NB=128), 120s timeout. HPL-CPU: tiny N=10000, NB=128, **30s timeout** (skip fast if container not ready). NCCL: **one test** (all_reduce_perf), **8B–1M** range, 1 iter, 45s timeout. STREAM: 1M elements, 3 iterations, 60s run timeout. Storage: **2 fio profiles** (seq-read, rand-4k-read), **5s** each (not 7×15s). nvbandwidth: 60s timeout per test.
+3. **README** — Quick start documents `run-all.sh --quick`; env table documents `HPC_QUICK` for full quick-mode description.
+4. **VERSION** — Bumped to 1.7.
+
+### V1.6 Changes (2026-02-11)
+
+**Online-first sources, progressive output, VM testing.**
+
+1. **Online-first, local fallback** — gpu-burn, nccl-tests, and stream-bench now try to obtain the latest source from the network first (git clone or curl), and only use bundled sources under `src/` when offline or when the download fails. HPL-MxP container: try registry pull before loading from bundled tar.
+2. **Progressive output** — run-all.sh prints (1) device result first (DEVICE: PASSED / FAILED / INCONCLUSIVE), (2) a compact checklist of all modules with ✓/○/✗, (3) detail sections for passed and failed/skipped. Report: first line is "Device result: PASSED/FAILED/CONDITIONAL PASS" for at-a-glance reading.
+3. **VERSION** — Bumped to 1.6.
+
 ### V1.5 Changes (2026-02-11)
 
 **VM validation and results archive fix.**

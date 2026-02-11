@@ -9,23 +9,30 @@ log_info "=== HPL CPU Benchmark ==="
 total_mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 total_mem_gb=$(echo "scale=0; $total_mem_kb / 1048576" | bc)
 
-# Detect swap — be more conservative without it
-total_swap_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
-if [ "${total_swap_kb:-0}" -le 0 ] 2>/dev/null; then
-    # No swap: cap at 70% to prevent OOM
-    mem_pct=0.70
-    log_warn "No swap detected — capping HPL memory at 70% to prevent OOM"
+# Quick mode: tiny problem to verify suite end-to-end
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    N=10000
+    NB=128
+    log_info "Quick mode — tiny HPL CPU N=$N NB=$NB"
 else
-    # Swap available: use 75%
-    mem_pct=0.75
-    log_info "Swap detected (${total_swap_kb} KB) — capping HPL memory at 75%"
+    # Detect swap — be more conservative without it
+    total_swap_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
+    if [ "${total_swap_kb:-0}" -le 0 ] 2>/dev/null; then
+        # No swap: cap at 70% to prevent OOM
+        mem_pct=0.70
+        log_warn "No swap detected — capping HPL memory at 70% to prevent OOM"
+    else
+        # Swap available: use 75%
+        mem_pct=0.75
+        log_info "Swap detected (${total_swap_kb} KB) — capping HPL memory at 75%"
+    fi
+    mem_for_hpl=$(echo "scale=0; $total_mem_kb * 1024 * $mem_pct" | bc)  # bytes
+    # N = sqrt(mem_bytes / 8) for double precision
+    N=$(echo "scale=0; sqrt($mem_for_hpl / 8)" | bc)
+    # Round down to nearest multiple of block size (NB)
+    NB=256
+    N=$(( (N / NB) * NB ))
 fi
-mem_for_hpl=$(echo "scale=0; $total_mem_kb * 1024 * $mem_pct" | bc)  # bytes
-# N = sqrt(mem_bytes / 8) for double precision
-N=$(echo "scale=0; sqrt($mem_for_hpl / 8)" | bc)
-# Round down to nearest multiple of block size (NB)
-NB=256
-N=$(( (N / NB) * NB ))
 
 NPROCS=$(nproc)
 # P x Q grid: try to make it square-ish
@@ -38,9 +45,12 @@ done
 
 log_info "HPL params: N=$N, NB=$NB, P=$P, Q=$Q, procs=$NPROCS, RAM=${total_mem_gb}GB"
 
-# Dynamic timeout: base 1800s (30 min) + 2s per GB of RAM
-# A 2TB node gets ~5800s (~97 min), a 256GB node gets ~2300s (~38 min)
-HPL_TIMEOUT=$((1800 + total_mem_gb * 2))
+# Quick mode: 30s timeout so we skip fast if container not cached / not available; full: base 1800s + 2s per GB of RAM
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    HPL_TIMEOUT=30
+else
+    HPL_TIMEOUT=$((1800 + total_mem_gb * 2))
+fi
 log_info "HPL timeout: ${HPL_TIMEOUT}s (dynamic based on ${total_mem_gb}GB RAM)"
 
 # ── Try containerized HPL first ──

@@ -37,12 +37,20 @@ GPU_MEM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits |
 GPU_MODEL=$(gpu_model)
 
 # ── Auto-configure problem size ──
-# Use ~80% of total GPU memory across all GPUs
-TOTAL_GPU_MEM_MB=$((GPU_MEM_MB * NGPUS))
-TOTAL_GPU_MEM_BYTES=$(echo "$TOTAL_GPU_MEM_MB * 1048576 * 0.8" | bc | cut -d. -f1)
-N=$(echo "scale=0; sqrt($TOTAL_GPU_MEM_BYTES / 8)" | bc)
-NB=1024  # Typical for GPU HPL
-N=$(( (N / NB) * NB ))
+# Quick mode: tiny problem (N=2048, NB=128) to finish in seconds and verify suite
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    N=2048
+    NB=128
+    TOTAL_GPU_MEM_MB=$((GPU_MEM_MB * NGPUS))
+    log_info "Quick mode — tiny HPL-MxP N=$N NB=$NB"
+else
+    # Use ~80% of total GPU memory across all GPUs
+    TOTAL_GPU_MEM_MB=$((GPU_MEM_MB * NGPUS))
+    TOTAL_GPU_MEM_BYTES=$(echo "$TOTAL_GPU_MEM_MB * 1048576 * 0.8" | bc | cut -d. -f1)
+    N=$(echo "scale=0; sqrt($TOTAL_GPU_MEM_BYTES / 8)" | bc)
+    NB=1024  # Typical for GPU HPL
+    N=$(( (N / NB) * NB ))
+fi
 
 # P x Q grid for GPUs
 P=1; Q=$NGPUS
@@ -58,7 +66,7 @@ log_info "HPL-MxP: N=$N, NB=$NB, P=$P, Q=$Q, GPUs=$NGPUS, GPU_MEM=${GPU_MEM_MB}M
 HPL_IMAGE="nvcr.io/nvidia/hpc-benchmarks:24.03"
 HPL_IMAGE_ALT="nvcr.io/nvidia/hpc-benchmarks:23.10"
 
-# Check if image is already available locally (avoids pull on air-gapped systems)
+# Check if image is already available locally (avoids pull when possible)
 _hpl_image_ready=false
 if $CONTAINER_CMD images -q "$HPL_IMAGE" 2>/dev/null | grep -q .; then
     log_info "HPL container image found locally: $HPL_IMAGE"
@@ -69,7 +77,21 @@ elif $CONTAINER_CMD images -q "$HPL_IMAGE_ALT" 2>/dev/null | grep -q .; then
     _hpl_image_ready=true
 fi
 
-# Try loading from bundled tar if available (sneakernet support)
+# Prefer pulling latest from registry; fallback to bundled tar (sneakernet/offline)
+if [ "$_hpl_image_ready" = false ]; then
+    log_info "Pulling HPL container image from registry..."
+    if $CONTAINER_CMD pull "$HPL_IMAGE" 2>&1 | tail -3; then
+        _hpl_image_ready=true
+    else
+        log_warn "Failed to pull $HPL_IMAGE, trying older tag..."
+        HPL_IMAGE="$HPL_IMAGE_ALT"
+        if $CONTAINER_CMD pull "$HPL_IMAGE" 2>&1 | tail -3; then
+            _hpl_image_ready=true
+        fi
+    fi
+fi
+
+# Fallback: try loading from bundled tar if available (offline/sneakernet)
 if [ "$_hpl_image_ready" = false ]; then
     for tarfile in "${HPC_BENCH_ROOT}/src/hpc-benchmarks"*.tar "${HPC_BENCH_ROOT}/src/hpl"*.tar; do
         if [ -f "$tarfile" ]; then
@@ -86,20 +108,6 @@ if [ "$_hpl_image_ready" = false ]; then
             break
         fi
     done
-fi
-
-# Last resort: try pulling from registry
-if [ "$_hpl_image_ready" = false ]; then
-    log_info "Pulling HPL container image..."
-    if $CONTAINER_CMD pull "$HPL_IMAGE" 2>&1 | tail -3; then
-        _hpl_image_ready=true
-    else
-        log_warn "Failed to pull $HPL_IMAGE, trying older tag..."
-        HPL_IMAGE="$HPL_IMAGE_ALT"
-        if $CONTAINER_CMD pull "$HPL_IMAGE" 2>&1 | tail -3; then
-            _hpl_image_ready=true
-        fi
-    fi
 fi
 
 if [ "$_hpl_image_ready" = false ]; then
@@ -147,8 +155,12 @@ $Q           Qs
 EOF
 
 # ── Run HPL-MxP ──
-# Dynamic timeout: base 1800s + 1s per GB of total GPU memory
-HPL_MXP_TIMEOUT=$((1800 + TOTAL_GPU_MEM_MB / 1024))
+# Quick mode: short timeout; full: base 1800s + 1s per GB of total GPU memory
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    HPL_MXP_TIMEOUT=120
+else
+    HPL_MXP_TIMEOUT=$((1800 + TOTAL_GPU_MEM_MB / 1024))
+fi
 log_info "Running HPL-MxP (timeout: ${HPL_MXP_TIMEOUT}s)..."
 hpl_output=$(run_with_timeout "$HPL_MXP_TIMEOUT" "hpl-mxp" \
     $CONTAINER_CMD run --rm --gpus all \

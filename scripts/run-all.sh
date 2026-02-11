@@ -1,11 +1,32 @@
 #!/usr/bin/env bash
 # run-all.sh — Master orchestrator for HPC bench suite
 # Runs all phases in order, handles timeouts, shows progress
+# Usage: run-all.sh [--quick]  (quick = short benchmarks to verify suite end-to-end)
 SCRIPT_NAME="run-all"
 source "$(dirname "$0")/../lib/common.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MAX_MODULE_TIME=${MAX_MODULE_TIME:-1800}  # 30 min per module
+
+# Parse flags
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --quick)
+            export HPC_QUICK=1
+            shift
+            ;;
+        *)
+            log_warn "Unknown option: $1 (use --quick for quick benchmark mode)"
+            shift
+            ;;
+    esac
+done
+
+# Quick mode: short runs per module so suite finishes fast (smoke test / VM validation)
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    MAX_MODULE_TIME=${MAX_MODULE_TIME:-600}   # 10 min per module in quick mode
+else
+    MAX_MODULE_TIME=${MAX_MODULE_TIME:-1800}  # 30 min per module
+fi
 
 # Read version from single source of truth
 HPC_BENCH_VERSION=$(cat "${HPC_BENCH_ROOT}/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
@@ -23,7 +44,11 @@ fi
 # Lock acquired — fd 9 held until process exits
 
 log_info "================================================================"
-log_info "  HPC Bench Suite v${HPC_BENCH_VERSION} — Full Run"
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    log_info "  HPC Bench Suite v${HPC_BENCH_VERSION} — Quick Run (short benchmarks)"
+else
+    log_info "  HPC Bench Suite v${HPC_BENCH_VERSION} — Full Run"
+fi
 log_info "  Host: $(hostname)"
 log_info "  Date: $(date -u)"
 log_info "  Results: ${HPC_RESULTS_DIR}"
@@ -122,30 +147,63 @@ log_info "╚══════════════════════�
 run_module "${SCRIPT_DIR}/report.sh"
 
 # ═══════════════════════════════════════════
-# Summary
+# Summary — Progressive output: device result → checklist → details
 # ═══════════════════════════════════════════
 END_TIME=$(date +%s)
 TOTAL_DURATION=$((END_TIME - START_TIME))
 DURATION_MIN=$((TOTAL_DURATION / 60))
 DURATION_SEC=$((TOTAL_DURATION % 60))
 
+# 1) Device result (first and foremost)
 echo ""
+echo "╔══════════════════════════════════════════════════════════════════╗"
+if [ "$FAILED" -gt 0 ]; then
+    echo "║  DEVICE: FAILED  —  $FAILED module(s) failed  (review report)       ║"
+elif [ "$SKIPPED" -eq "$TOTAL" ] && [ "$PASSED" -eq 0 ]; then
+    echo "║  DEVICE: INCONCLUSIVE  —  all modules skipped (e.g. no GPU/IB)       ║"
+else
+    echo "║  DEVICE: PASSED  —  all ran modules passed                           ║"
+fi
+echo "╚══════════════════════════════════════════════════════════════════╝"
+echo ""
+
+# 2) Checklist (compact)
+echo "  CHECKLIST  ($PASSED passed, $FAILED failed, $SKIPPED skipped)"
+echo "  ─────────────────────────────────────────────────────────────"
+for name in $(echo "${!MODULE_STATUS[@]}" | tr ' ' '\n' | sort); do
+    status="${MODULE_STATUS[$name]}"
+    if [[ "$status" == OK* ]]; then
+        symbol="✓"
+    elif [[ "$status" == SKIPPED* ]]; then
+        symbol="○"
+    else
+        symbol="✗"
+    fi
+    printf "    %s  %-28s  %s\n" "$symbol" "$name" "$status"
+done
+echo "  ─────────────────────────────────────────────────────────────"
+echo ""
+
+# 3) Detail: passed vs failed/skipped
+echo "  PASSED:"
+for name in $(echo "${!MODULE_STATUS[@]}" | tr ' ' '\n' | sort); do
+    status="${MODULE_STATUS[$name]}"
+    [[ "$status" == OK* ]] && printf "    • %s — %s\n" "$name" "$status"
+done
+echo ""
+echo "  FAILED / SKIPPED:"
+for name in $(echo "${!MODULE_STATUS[@]}" | tr ' ' '\n' | sort); do
+    status="${MODULE_STATUS[$name]}"
+    [[ "$status" != OK* ]] && printf "    • %s — %s\n" "$name" "$status"
+done
+echo ""
+
 log_info "================================================================"
 log_info "  HPC Bench Suite — COMPLETE"
 log_info "  Duration: ${DURATION_MIN}m ${DURATION_SEC}s"
-log_info "  Modules: $TOTAL total, $PASSED passed, $FAILED failed, $SKIPPED skipped"
 log_info "  Results: ${HPC_RESULTS_DIR}"
 log_info "  Report:  ${HPC_RESULTS_DIR}/report.md"
 log_info "================================================================"
-
-# Module status table
-echo ""
-echo "Module Results:"
-echo "─────────────────────────────────────────"
-for name in "${!MODULE_STATUS[@]}"; do
-    printf "  %-25s %s\n" "$name" "${MODULE_STATUS[$name]}"
-done | sort
-echo "─────────────────────────────────────────"
 
 # Emit orchestrator JSON (portable ISO timestamps: GNU date -d not on macOS)
 _iso_utc() {

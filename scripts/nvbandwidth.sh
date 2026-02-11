@@ -78,11 +78,15 @@ register_cleanup "$NVB_DIR"
 # ── Run tests ──
 declare -A test_results
 
+# Quick mode: shorter timeout per test
+NVB_TIMEOUT=${HPC_QUICK:+60}
+NVB_TIMEOUT=${NVB_TIMEOUT:-300}
+
 run_nvb_test() {
     local test_name="$1"
     log_info "Running nvbandwidth: $test_name"
     local output
-    output=$(run_with_timeout 300 "nvbandwidth-$test_name" "$NVB_BIN" -t "$test_name" 2>&1) || true
+    output=$(run_with_timeout "$NVB_TIMEOUT" "nvbandwidth-$test_name" "$NVB_BIN" -t "$test_name" 2>&1) || true
 
     # nvbandwidth output format:
     #   Running <test_name>.

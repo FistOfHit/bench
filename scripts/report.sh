@@ -30,6 +30,19 @@ fi
 
 # ── Generate Report ──
 {
+# First: device result (clear at a glance)
+case "$OVERALL" in
+    PASS)  RESULT_LABEL="PASSED" ;;
+    WARN)  RESULT_LABEL="CONDITIONAL PASS (warnings)" ;;
+    FAIL)  RESULT_LABEL="FAILED" ;;
+    *)     RESULT_LABEL="$OVERALL" ;;
+esac
+echo ""
+echo "## Device result: **${RESULT_LABEL}**"
+echo ""
+echo "---"
+echo ""
+
 cat <<HEADER
 # HPC Benchmarking Report
 
@@ -37,7 +50,7 @@ cat <<HEADER
 **Date:** ${RUN_DATE}
 **Duration:** ${DURATION}
 **Suite Version:** ${HPC_BENCH_VERSION}
-**Overall Result:** **${OVERALL}**
+**Overall Result:** **${OVERALL}** (${PASS_COUNT} passed, ${WARN_COUNT} warnings, ${FAIL_COUNT} failed, ${SKIP_COUNT} skipped)
 
 ---
 

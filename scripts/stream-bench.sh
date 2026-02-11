@@ -14,28 +14,33 @@ STREAM_SRC="${STREAM_DIR}/stream.c"
 STREAM_BIN="${STREAM_DIR}/stream"
 
 if [ ! -x "$STREAM_BIN" ]; then
-    # Use bundled STREAM source (no internet required)
+    # Prefer latest from online; fallback to bundled STREAM source
     BUNDLED_SRC="${HPC_BENCH_ROOT}/src/stream.c"
-    if [ -f "$BUNDLED_SRC" ]; then
-        log_info "Using bundled STREAM source"
+    if curl -fsSL "https://www.cs.virginia.edu/stream/FTP/Code/stream.c" -o "$STREAM_SRC" 2>/dev/null && [ -s "$STREAM_SRC" ]; then
+        log_info "Using STREAM source from upstream (download)"
+    elif [ -f "$BUNDLED_SRC" ]; then
+        log_info "Using bundled STREAM source (download failed or offline)"
         cp "$BUNDLED_SRC" "$STREAM_SRC"
     else
-        log_warn "Bundled STREAM source not found at $BUNDLED_SRC, attempting download..."
-        curl -fsSL "https://www.cs.virginia.edu/stream/FTP/Code/stream.c" -o "$STREAM_SRC" 2>/dev/null || {
-            log_error "Failed to obtain STREAM source (no bundled copy, download failed)"
-            echo '{"error":"STREAM source unavailable"}' | emit_json "stream-bench" "error"
-            exit 1
-        }
+        log_error "Failed to obtain STREAM source (no bundled copy, download failed)"
+        echo '{"error":"STREAM source unavailable"}' | emit_json "stream-bench" "error"
+        exit 1
     fi
 
     # Compile with optimization
-    # Size array to ~4x L3 cache or at least 80M elements
+    # Quick mode: small array and few iterations; full: ~4x L3 or 80M elements
     NPROCS=$(nproc)
-    ARRAY_SIZE=80000000
-    # Scale up for large machines
-    total_mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-    if [ "$total_mem_kb" -gt 67108864 ]; then  # >64GB
-        ARRAY_SIZE=200000000
+    if [ "${HPC_QUICK:-0}" = "1" ]; then
+        ARRAY_SIZE=1000000
+        NTIMES=3
+        log_info "Quick mode — STREAM array size: $ARRAY_SIZE, iterations: $NTIMES"
+    else
+        ARRAY_SIZE=80000000
+        NTIMES=20
+        total_mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+        if [ "$total_mem_kb" -gt 67108864 ]; then  # >64GB
+            ARRAY_SIZE=200000000
+        fi
     fi
 
     # Use -mcmodel=medium for large arrays (>2GB static data) on x86_64
@@ -46,7 +51,7 @@ if [ ! -x "$STREAM_BIN" ]; then
     fi
 
     log_info "Compiling STREAM (array size: $ARRAY_SIZE)..."
-    gcc -O3 -march=native -fopenmp $MCMODEL -DSTREAM_ARRAY_SIZE=$ARRAY_SIZE -DNTIMES=20 \
+    gcc -O3 -march=native -fopenmp $MCMODEL -DSTREAM_ARRAY_SIZE=$ARRAY_SIZE -DNTIMES=${NTIMES:-20} \
         "$STREAM_SRC" -o "$STREAM_BIN" 2>&1 || {
         # Fallback without OpenMP
         gcc -O3 $MCMODEL -DSTREAM_ARRAY_SIZE=$ARRAY_SIZE "$STREAM_SRC" -o "$STREAM_BIN" 2>&1 || {
@@ -58,10 +63,12 @@ if [ ! -x "$STREAM_BIN" ]; then
 fi
 
 # ── Run STREAM ──
+STREAM_TIMEOUT=300
+[ "${HPC_QUICK:-0}" = "1" ] && STREAM_TIMEOUT=60
 log_info "Running STREAM with OMP_NUM_THREADS=$NPROCS..."
 export OMP_NUM_THREADS=$NPROCS
 
-output=$(run_with_timeout 300 "stream" "$STREAM_BIN" 2>&1) || true
+output=$(run_with_timeout "$STREAM_TIMEOUT" "stream" "$STREAM_BIN" 2>&1) || true
 
 # Parse: Function    Best Rate MB/s  (filter out log lines)
 copy_mbps=$(echo "$output" | awk '/^Copy:/ {print $2}')

@@ -2,7 +2,7 @@
 
 A comprehensive benchmarking and diagnostics suite for high-performance computing (HPC) systems. Runs hardware discovery, GPU/CPU/network/storage benchmarks, and produces structured JSON results plus a markdown report.
 
-**Version:** 1.5 (see [VERSION](VERSION))
+**Version:** 1.7 (see [VERSION](VERSION))
 
 ## Features
 
@@ -37,9 +37,48 @@ sudo bash scripts/bootstrap.sh
 
 # 2. Run full suite (all phases: bootstrap, inventory, benchmarks, diagnostics, report)
 sudo bash scripts/run-all.sh
+
+# Or run in quick mode (short benchmarks: tiny HPL, 3s GPU burn, DCGM r1 only, etc.) to verify the suite end-to-end:
+sudo bash scripts/run-all.sh --quick
 ```
 
-Results go to `/var/log/hpc-bench/results/` by default; the final report is `report.md` in that directory, and a timestamped archive (all JSON + report + logs) is created for transfer.
+Results go to `/var/log/hpc-bench/results/` by default (override with `HPC_RESULTS_DIR`). See **Viewing results** below for where to find the report and logs.
+
+## Viewing results
+
+**All results and logs live in one folder.** Default path: `/var/log/hpc-bench/results/`.
+
+| What you want | Where to look |
+|---------------|----------------|
+| **Quick summary** — human-readable report | **`report.md`** (at the root of the results folder). Open this first for pass/fail, scores, and key numbers. |
+| **Per-module JSON** — machine-readable results | One file per module: `bootstrap.json`, `gpu-burn.json`, `dcgm-diag.json`, `run-all.json`, etc., in the same folder. |
+| **Logs** — if you need to debug or inspect stdout | **`logs/`** subfolder: e.g. `logs/gpu-burn-stdout.log`, `logs/dcgm-diag.log`, `logs/fio-seq-read.log`. |
+| **Portable bundle** — to copy off the server | A timestamped tarball in the results folder: `hpc-bench-<hostname>-<timestamp>.tar.gz` (contains all JSON, report, and logs). |
+
+**Example (default path):**
+
+```text
+/var/log/hpc-bench/results/
+├── report.md          ← start here: quick inspection
+├── report.json
+├── run-all.json
+├── bootstrap.json
+├── gpu-burn.json
+├── dcgm-diag.json
+├── ...                 (one .json per module)
+├── logs/               ← module logs when you need them
+│   ├── bootstrap-stdout.log
+│   ├── gpu-burn-stdout.log
+│   ├── gpu-burn.log
+│   └── ...
+└── hpc-bench-<hostname>-<timestamp>.tar.gz
+```
+
+To use a different output directory and regenerate the report from existing results:
+
+```bash
+HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
+```
 
 ## Running individual modules
 
@@ -69,7 +108,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 | `HPC_WORK_DIR` | `/tmp/hpc-bench-work` | Build and temporary working files |
 | `MAX_MODULE_TIME` | `1800` | Timeout in seconds per module in `run-all.sh` |
 | `HPC_KEEP_TOOLS` | `0` | Set to `1` to skip cleanup of built tools in work dir |
-| `HPC_QUICK` | *(unset)* | Set to `1` to shorten storage-bench fio runtime (15s per profile) for quick/CI runs |
+| `HPC_QUICK` | *(unset)* | Set to `1` or use `run-all.sh --quick` for quick benchmark mode: short runs (DCGM r1 only, 3s GPU burn, tiny HPL, short NCCL/STREAM/fio) to verify the suite end-to-end |
 
 ## Repository layout
 

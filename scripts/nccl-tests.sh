@@ -35,20 +35,19 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
         CUDA_HOME=$(dirname $(dirname $(which nvcc 2>/dev/null))) 2>/dev/null || true
     fi
 
-    # Prefer bundled source in src/nccl-tests/
+    # Prefer latest from online; fallback to bundled source in src/nccl-tests/
     BUNDLED_NCCL="${HPC_BENCH_ROOT}/src/nccl-tests"
-    if [ -f "${BUNDLED_NCCL}/Makefile" ]; then
-        log_info "Using bundled nccl-tests source"
+    rm -rf "$NCCL_DIR"
+    if git clone https://github.com/NVIDIA/nccl-tests.git "$NCCL_DIR" 2>/dev/null; then
+        log_info "Using nccl-tests from upstream (git clone)"
+    elif [ -f "${BUNDLED_NCCL}/Makefile" ]; then
+        log_info "Using bundled nccl-tests source (online clone failed or offline)"
         rm -rf "$NCCL_DIR"
         cp -r "$BUNDLED_NCCL" "$NCCL_DIR"
     else
-        log_warn "Bundled nccl-tests source not found, trying git clone..."
-        rm -rf "$NCCL_DIR"
-        if ! git clone https://github.com/NVIDIA/nccl-tests.git "$NCCL_DIR" 2>/dev/null; then
-            log_error "Failed to clone nccl-tests and no bundled source available"
-            echo '{"error":"source unavailable"}' | emit_json "nccl-tests" "error"
-            exit 1
-        fi
+        log_error "Failed to clone nccl-tests and no bundled source available"
+        echo '{"error":"source unavailable"}' | emit_json "nccl-tests" "error"
+        exit 1
     fi
 
     cd "$NCCL_DIR"
@@ -68,10 +67,24 @@ fi
 register_cleanup "$NCCL_DIR"
 
 # ── Run tests ──
-# Test parameters: 8B to 8GB, step x2
-MIN_BYTES="8"
-MAX_BYTES="8G"
-STEP_FACTOR="2"
+# Quick mode: single test (all_reduce_perf), tiny range 8B–1M, 1 iter — verifies NCCL path in ~20–30s; full: all 5 tests, 8B–8GB
+if [ "${HPC_QUICK:-0}" = "1" ]; then
+    MIN_BYTES="8"
+    MAX_BYTES="1M"
+    STEP_FACTOR="2"
+    NCCL_ITERS=1
+    NCCL_WARMUP=0
+    NCCL_TIMEOUT=45
+    NCCL_QUICK_TESTS="all_reduce_perf"   # single test to verify functionality
+else
+    MIN_BYTES="8"
+    MAX_BYTES="8G"
+    STEP_FACTOR="2"
+    NCCL_ITERS=20
+    NCCL_WARMUP=5
+    NCCL_TIMEOUT=600
+    NCCL_QUICK_TESTS=""
+fi
 
 declare -A RESULTS
 
@@ -86,8 +99,8 @@ run_nccl_test() {
 
     log_info "Running $test_name with $NGPUS GPUs..."
     local output
-    output=$(run_with_timeout 600 "$test_name" \
-        "$binary" -b "$MIN_BYTES" -e "$MAX_BYTES" -f "$STEP_FACTOR" -g "$NGPUS" -n 20 -w 5 2>&1) || true
+    output=$(run_with_timeout "${NCCL_TIMEOUT:-600}" "$test_name" \
+        "$binary" -b "$MIN_BYTES" -e "$MAX_BYTES" -f "$STEP_FACTOR" -g "$NGPUS" -n "${NCCL_ITERS:-20}" -w "${NCCL_WARMUP:-5}" 2>&1) || true
 
     # Parse: extract the row with max message size for bus bandwidth
     # Bundled format (7 cols): size  count  type  time(us)  algbw  busbw  error
@@ -125,10 +138,16 @@ run_nccl_test() {
     echo "{\"test\":\"$test_name\",\"gpus\":$NGPUS,\"summary\":$parsed,\"datapoints\":$datapoints}"
 }
 
-# Run the main NCCL collectives
+# Run the main NCCL collectives (quick mode: one test only)
+if [ -n "${NCCL_QUICK_TESTS:-}" ]; then
+    NCCL_TEST_LIST="$NCCL_QUICK_TESTS"
+    log_info "Quick mode — running single NCCL test: $NCCL_QUICK_TESTS"
+else
+    NCCL_TEST_LIST="all_reduce_perf all_gather_perf broadcast_perf reduce_scatter_perf reduce_perf"
+fi
 tests_output="["
 first=true
-for test in all_reduce_perf all_gather_perf broadcast_perf reduce_scatter_perf reduce_perf; do
+for test in $NCCL_TEST_LIST; do
     result=$(run_nccl_test "$test")
     if [ -n "$result" ] && [ "$result" != "" ]; then
         $first || tests_output+=","
