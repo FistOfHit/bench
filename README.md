@@ -116,4 +116,4 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 
 ## License
 
-See the repository for license information. Third-party code in `src/` (e.g. gpu-burn, nccl-tests, STREAM) may have their own licenses; refer to comments and upstream sources.
+This project is licensed under the MIT License — see [LICENSE](LICENSE). Third-party code in `src/` (e.g. gpu-burn, nccl-tests, STREAM) may have their own licenses; refer to comments and upstream sources.
