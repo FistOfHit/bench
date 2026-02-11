@@ -6,10 +6,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== GPU Burn Stress Test ==="
 
-if ! has_cmd nvidia-smi; then
-    echo '{"note":"no nvidia-smi"}' | emit_json "gpu-burn" "skipped"
-    exit 0
-fi
+require_gpu "gpu-burn" "no nvidia-smi"
 
 # In VMs use shorter burn to avoid long timeouts; override with GPU_BURN_DURATION
 if is_virtualized; then

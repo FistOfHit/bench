@@ -5,10 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== NCCL Tests ==="
 
-if ! has_cmd nvidia-smi; then
-    echo '{"note":"no GPU"}' | emit_json "nccl-tests" "skipped"
-    exit 0
-fi
+require_gpu "nccl-tests" "no GPU"
 
 NGPUS=$(gpu_count)
 if [ "$NGPUS" -lt 2 ]; then

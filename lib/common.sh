@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# common.sh — Shared functions for HPC bench suite (V1.1)
-# Source this from every script: source "$(dirname "$0")/../lib/common.sh"
+# common.sh — Shared functions for HPC bench suite
+# Source from scripts: source "$(dirname "$0")/../lib/common.sh"
 
 set -euo pipefail
 
@@ -300,6 +300,22 @@ do_cleanup() {
     return 0
 }
 trap do_cleanup EXIT
+
+# ── GPU requirement (skip module when no NVIDIA GPU) ──
+require_gpu() {
+    local module="${1:?require_gpu: module name required}"
+    local note="${2:-no GPU}"
+    if ! has_cmd nvidia-smi; then
+        log_warn "nvidia-smi not found — skipping $module"
+        jq -n --arg note "$note" '{note: $note}' | emit_json "$module" "skipped"
+        exit 0
+    fi
+    if ! nvidia-smi &>/dev/null; then
+        log_warn "nvidia-smi failed — skipping $module"
+        jq -n --arg note "nvidia-smi failed" '{note: $note}' | emit_json "$module" "skipped"
+        exit 0
+    fi
+}
 
 # ── Nvidia helpers ──
 gpu_count() {

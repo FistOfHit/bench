@@ -290,15 +290,13 @@ if has_result "nvbandwidth" && [ "$(mod_status nvbandwidth)" != "skipped" ]; the
     echo "### NVBandwidth (GPU Memory/PCIe/NVLink)"
     echo ""
     NVB="${HPC_RESULTS_DIR}/nvbandwidth.json"
-    # Helper: extract mean or sum BW from a nvbandwidth result object
-    _nvb_bw() { jq -r ".$1 | if .sum_gbps then \"\(.sum_gbps)\" elif .mean_gbps then \"\(.mean_gbps) (max: \(.max_gbps))\" else \"N/A\" end" "$NVB" 2>/dev/null || echo "N/A"; }
     echo "| Test | Bandwidth (GB/s) |"
     echo "|------|-----------------|"
-    echo "| Host → Device | $(_nvb_bw host_to_device) |"
-    echo "| Device → Host | $(_nvb_bw device_to_host) |"
-    echo "| Device → Device (read) | $(_nvb_bw device_to_device_read) |"
-    echo "| Device → Device (write) | $(_nvb_bw device_to_device_write) |"
-    echo "| Device ↔ Device (bidir) | $(_nvb_bw device_to_device_bidirectional) |"
+    echo "| Host → Device | $(report_nvb_bw "$NVB" host_to_device) |"
+    echo "| Device → Host | $(report_nvb_bw "$NVB" device_to_host) |"
+    echo "| Device → Device (read) | $(report_nvb_bw "$NVB" device_to_device_read) |"
+    echo "| Device → Device (write) | $(report_nvb_bw "$NVB" device_to_device_write) |"
+    echo "| Device ↔ Device (bidir) | $(report_nvb_bw "$NVB" device_to_device_bidirectional) |"
     echo ""
     # Theoretical comparison
     nvb_pcie=$(jf "$NVB" '.theoretical.pcie_bandwidth_gbps' '0')

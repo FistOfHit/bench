@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# ib-tests.sh — InfiniBand perftest benchmarks (loopback/single-node) (V1.1)
-# Added: Virtualization detection - skips gracefully in VMs
+# ib-tests.sh — InfiniBand perftest (loopback/single-node); skips in VMs
 SCRIPT_NAME="ib-tests"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -12,7 +11,7 @@ VIRT_TYPE=$(echo "$VIRT_INFO" | jq -r '.type')
 
 if [ "$VIRT_TYPE" != "none" ]; then
     log_warn "Running in virtualized environment ($VIRT_TYPE) — InfiniBand not accessible"
-    echo '{"note":"InfiniBand not available in virtualized environment","virtualization":'$VIRT_INFO'}' | emit_json "ib-tests" "skipped"
+    jq -n --arg note "InfiniBand not available in virtualized environment" --argjson virtualization "$VIRT_INFO" '{note: $note, virtualization: $virtualization}' | emit_json "ib-tests" "skipped"
     exit 0
 fi
 

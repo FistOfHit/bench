@@ -2,7 +2,7 @@
 
 A comprehensive benchmarking and diagnostics suite for high-performance computing (HPC) systems. Runs hardware discovery, GPU/CPU/network/storage benchmarks, and produces structured JSON results plus a markdown report.
 
-**Version:** 1.4 (see [VERSION](VERSION))
+**Version:** 1.4.1 (see [VERSION](VERSION))
 
 ## Features
 

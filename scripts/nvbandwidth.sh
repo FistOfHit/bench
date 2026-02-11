@@ -5,10 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== nvbandwidth ==="
 
-if ! has_cmd nvidia-smi; then
-    echo '{"note":"no GPU"}' | emit_json "nvbandwidth" "skipped"
-    exit 0
-fi
+require_gpu "nvbandwidth" "no GPU"
 
 NVB_DIR="${HPC_WORK_DIR}/nvbandwidth"
 NVB_BIN="${NVB_DIR}/nvbandwidth"

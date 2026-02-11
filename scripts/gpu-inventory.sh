@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# gpu-inventory.sh — Comprehensive NVIDIA GPU inventory (V1.1)
-# Fixed: Handle unsupported nvidia-smi fields gracefully, NVLink topology
+# gpu-inventory.sh — NVIDIA GPU inventory (driver, CUDA, per-GPU details, NVLink, topology)
 SCRIPT_NAME="gpu-inventory"
 source "$(dirname "$0")/../lib/common.sh"
 

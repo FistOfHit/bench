@@ -99,6 +99,16 @@ score_module() {
     SCORE_NOTES[$mod]="$note"
 }
 
+# NVBandwidth result: extract sum_gbps or mean_gbps (for report table)
+report_nvb_bw() {
+    local nvb_file="$1" key="$2"
+    if [ -f "$nvb_file" ]; then
+        jq -r ".$key | if .sum_gbps then \"\(.sum_gbps)\" elif .mean_gbps then \"\(.mean_gbps) (max: \(.max_gbps))\" else \"N/A\" end" "$nvb_file" 2>/dev/null || echo "N/A"
+    else
+        echo "N/A"
+    fi
+}
+
 run_report_scoring() {
     local mod
     for mod in "${ALL_MODULES[@]}"; do

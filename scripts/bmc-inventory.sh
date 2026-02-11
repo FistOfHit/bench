@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# bmc-inventory.sh — IPMI/BMC: firmware, network, sensors, chassis status (V1.1)
-# Added: Virtualization detection - skips gracefully in VMs
+# bmc-inventory.sh — IPMI/BMC inventory (firmware, network, sensors); skips in VMs
 SCRIPT_NAME="bmc-inventory"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -12,7 +11,7 @@ VIRT_TYPE=$(echo "$VIRT_INFO" | jq -r '.type')
 
 if [ "$VIRT_TYPE" != "none" ]; then
     log_warn "Running in virtualized environment ($VIRT_TYPE) — BMC not accessible"
-    echo '{"note":"BMC not available in virtualized environment","virtualization":'$VIRT_INFO'}' | emit_json "bmc-inventory" "skipped"
+    jq -n --arg note "BMC not available in virtualized environment" --argjson virtualization "$VIRT_INFO" '{note: $note, virtualization: $virtualization}' | emit_json "bmc-inventory" "skipped"
     exit 0
 fi
 

@@ -47,11 +47,8 @@ run_module() {
     log_info "━━━ [$TOTAL] Running: $name ━━━"
     local mod_start=$(date +%s)
 
-    if timeout "$MAX_MODULE_TIME" bash "$script" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"; then
-        local rc=0
-    else
-        local rc=$?
-    fi
+    timeout "$MAX_MODULE_TIME" bash "$script" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
+    local rc=${PIPESTATUS[0]:-$?}
 
     local mod_end=$(date +%s)
     local mod_duration=$((mod_end - mod_start))

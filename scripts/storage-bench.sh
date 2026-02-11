@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# storage-bench.sh — fio storage benchmarks with multiple profiles (V1.1)
-# Fixed: fio JSON output parsing, direct capture without run_with_timeout interference
+# storage-bench.sh — fio storage benchmarks (sequential, random, mixed profiles)
 SCRIPT_NAME="storage-bench"
 source "$(dirname "$0")/../lib/common.sh"
 

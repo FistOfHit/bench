@@ -5,10 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== HPL-MxP (GPU) Benchmark ==="
 
-if ! has_cmd nvidia-smi; then
-    echo '{"note":"no GPU"}' | emit_json "hpl-mxp" "skipped"
-    exit 0
-fi
+require_gpu "hpl-mxp" "no GPU"
 
 # Need container runtime with GPU support
 CONTAINER_CMD=""
