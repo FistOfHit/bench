@@ -149,6 +149,17 @@ hpl_output=$(run_with_timeout "$HPL_MXP_TIMEOUT" "hpl-mxp" \
     /workspace/hpl.sh --dat /workspace/HPL.dat 2>&1) || true
 
 # ── Parse ──
+# If run produced no usable output (e.g. container crash, SIGPIPE in VM), skip gracefully
+if [ -z "$hpl_output" ] || ! echo "$hpl_output" | grep -q "WR[0-9]\|PASSED"; then
+    if is_virtualized; then
+        log_warn "HPL-MxP produced no results (typical in VMs) — skipping"
+        echo '{"note":"HPL-MxP run produced no results (container/VM limitation)","skip_reason":"vm"}' | emit_json "hpl-mxp" "skipped"
+        exit 0
+    fi
+    log_error "HPL-MxP run produced no usable output"
+    echo '{"error":"no usable output from HPL-MxP run"}' | emit_json "hpl-mxp" "error"
+    exit 1
+fi
 gflops=$(echo "$hpl_output" | awk '/WR[0-9]/ {print $NF}' | tail -1)
 hpl_time=$(echo "$hpl_output" | awk '/WR[0-9]/ {print $(NF-1)}' | tail -1)
 passed=$(echo "$hpl_output" | grep -ci "PASSED" || echo 0)

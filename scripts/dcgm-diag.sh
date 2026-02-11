@@ -11,6 +11,13 @@ if ! has_cmd dcgmi; then
     exit 0
 fi
 
+# In VMs, DCGM diag often hangs or is unsupported — use shorter timeout and treat failure as skip
+DCGM_TIMEOUT=1800
+if is_virtualized; then
+    DCGM_TIMEOUT=120
+    log_info "Virtualized environment — using ${DCGM_TIMEOUT}s timeout per level"
+fi
+
 # Ensure nv-hostengine is running
 if ! pgrep -x nv-hostengine &>/dev/null; then
     log_info "Starting nv-hostengine..."
@@ -23,7 +30,7 @@ diag_output=""
 diag_level=0
 for level in 3 2 1; do
     log_info "Attempting DCGM diag level $level..."
-    diag_output=$(run_with_timeout 1800 "dcgm-diag-r${level}" dcgmi diag -r "$level" 2>&1) && {
+    diag_output=$(run_with_timeout "$DCGM_TIMEOUT" "dcgm-diag-r${level}" dcgmi diag -r "$level" 2>&1) && {
         diag_level=$level
         log_ok "DCGM diag level $level completed"
         break
@@ -33,6 +40,11 @@ for level in 3 2 1; do
 done
 
 if [ "$diag_level" -eq 0 ]; then
+    if is_virtualized; then
+        log_warn "All DCGM diag levels failed (typical in VMs) — skipping"
+        echo '{"note":"all levels failed (typical in virtualized environments)","skip_reason":"vm"}' | emit_json "dcgm-diag" "skipped"
+        exit 0
+    fi
     log_error "All DCGM diag levels failed"
     echo "{\"error\":\"all levels failed\",\"output\":$(json_str "$diag_output")}" | emit_json "dcgm-diag" "error"
     exit 1

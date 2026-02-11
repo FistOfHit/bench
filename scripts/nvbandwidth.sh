@@ -64,14 +64,14 @@ if [ ! -x "$NVB_BIN" ]; then
                    make -j$(nproc) 2>&1 | tail -5; then
                     NVB_BIN="${NVB_DIR}/build/nvbandwidth"
                 else
-                    log_error "nvbandwidth build failed"
-                    echo '{"error":"build failed","note":"nvbandwidth not available offline — install CUDA toolkit with nvbandwidth or ensure internet access"}' | emit_json "nvbandwidth" "error"
-                    exit 1
+                    log_warn "nvbandwidth build failed — skipping (install CUDA toolkit with nvbandwidth or use bare metal)"
+                    echo '{"note":"build failed","skip_reason":"nvbandwidth not available — install CUDA toolkit with nvbandwidth or ensure internet and build deps"}' | emit_json "nvbandwidth" "skipped"
+                    exit 0
                 fi
             else
-                log_error "nvbandwidth not available offline. It is not bundled (CMake-based, complex dependencies). Install via CUDA toolkit or ensure internet access."
-                echo '{"error":"nvbandwidth not available offline","note":"Install CUDA toolkit >= 12.x which includes nvbandwidth, or ensure internet access for git clone"}' | emit_json "nvbandwidth" "error"
-                exit 1
+                log_warn "nvbandwidth not available offline (not bundled). Install via CUDA toolkit or ensure internet for git clone."
+                echo '{"note":"nvbandwidth not available offline","skip_reason":"Install CUDA toolkit >= 12.x which includes nvbandwidth, or ensure internet access for git clone"}' | emit_json "nvbandwidth" "skipped"
+                exit 0
             fi
         fi
     fi

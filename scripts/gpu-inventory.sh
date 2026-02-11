@@ -27,14 +27,15 @@ if [ "$VIRT_TYPE" != "none" ]; then
     log_warn "$VIRT_NOTE"
 fi
 
-# ── Driver & CUDA ──
-driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:cntrl:]')
+# ── Driver & CUDA (query may exit non-zero when fields unsupported, e.g. in VMs) ──
+driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:cntrl:]') || true
 # cuda_version field may not exist on all drivers — fall back to nvidia-smi header parse
-cuda_ver=$(nvidia-smi --query-gpu=cuda_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:cntrl:]')
+cuda_ver=$(nvidia-smi --query-gpu=cuda_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:cntrl:]') || true
 if [ -z "$cuda_ver" ] || echo "$cuda_ver" | grep -qi "not a valid field\|error"; then
-    cuda_ver=$(nvidia-smi 2>/dev/null | grep "CUDA Version" | awk '{print $NF}' | tr -d '[:cntrl:]')
+    cuda_ver=$(nvidia-smi 2>/dev/null | grep -i "CUDA Version" | head -1 | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p') || true
     [ -z "$cuda_ver" ] && cuda_ver="unknown"
 fi
+[ -z "$driver_ver" ] && driver_ver="unknown"
 
 # nvcc version — check PATH then common locations
 nvcc_ver="none"
@@ -67,7 +68,9 @@ OPTIONAL_FIELDS=("bar1.total" "bar1.used" "fan.speed" "utilization.gpu" "utiliza
 QUERY_FIELDS="$BASE_FIELDS"
 ACTIVE_OPTIONAL=()
 for field in "${OPTIONAL_FIELDS[@]}"; do
-    if nvidia-smi --query-gpu="$field" --format=csv,noheader 2>&1 | head -1 | grep -qv "not a valid field"; then
+    # Probe without failing script when nvidia-smi exits non-zero (e.g. in VMs or unsupported fields)
+    field_out=$(nvidia-smi --query-gpu="$field" --format=csv,noheader 2>&1) || true
+    if echo "$field_out" | head -1 | grep -qv "not a valid field"; then
         QUERY_FIELDS="${QUERY_FIELDS},${field}"
         ACTIVE_OPTIONAL+=("$field")
     else
@@ -77,15 +80,24 @@ done
 
 log_info "Querying fields: $QUERY_FIELDS"
 
-# ── Per-GPU details ──
-RAW_GPU_DATA=$(nvidia-smi --query-gpu="$QUERY_FIELDS" --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]')
+# ── Per-GPU details (allow nvidia-smi to fail in VMs / restricted environments) ──
+RAW_GPU_DATA=$(nvidia-smi --query-gpu="$QUERY_FIELDS" --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]') || true
+if [ -z "$RAW_GPU_DATA" ] || ! echo "$RAW_GPU_DATA" | head -1 | grep -q .; then
+    log_warn "Full GPU query returned no data — trying base fields only"
+    RAW_GPU_DATA=$(nvidia-smi --query-gpu="$BASE_FIELDS" --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]') || true
+fi
+if [ -z "$RAW_GPU_DATA" ]; then
+    log_error "nvidia-smi query failed — no GPU data"
+    echo '{"gpus":[],"error":"nvidia-smi query failed"}' | emit_json "gpu-inventory" "error"
+    exit 1
+fi
 
 # Build optional fields JSON string for python3
 OPT_JSON="["
-opt_first=true
+opt_first=1
 for f in "${ACTIVE_OPTIONAL[@]}"; do
-    $opt_first || OPT_JSON+=","
-    opt_first=false
+    [ "$opt_first" -eq 0 ] && OPT_JSON+=","
+    opt_first=0
     OPT_JSON+="\"$(echo "$f" | tr '.' '_')\""
 done
 OPT_JSON+="]"
@@ -190,29 +202,47 @@ fi
 primary_model=$(echo "$RAW_GPU_DATA" | head -1 | cut -d',' -f2 | sed 's/^ *//;s/ *$//')
 spec=$(lookup_gpu_spec "$primary_model")
 
-# ── Validate ALL JSON before passing to jq --argjson ──
-echo "$nvlink_json" | jq . >/dev/null 2>&1 || nvlink_json='{"available":false}'
-echo "$topology_json" | jq . >/dev/null 2>&1 || topology_json='{}'
-echo "$gpu_json" | jq . >/dev/null 2>&1 || gpu_json='[]'
-echo "$spec" | jq . >/dev/null 2>&1 || spec='{}'
+# ── Validate JSON and normalize (set -e would exit when jq fails; spec from lookup_gpu_spec can be malformed) ──
+nvlink_json=$(echo "$nvlink_json" | jq -c . 2>/dev/null) || true
+echo "$nvlink_json" | jq -e . >/dev/null 2>&1 || nvlink_json='{"available":false}'
+topology_json=$(echo "$topology_json" | jq -c . 2>/dev/null) || true
+echo "$topology_json" | jq -e . >/dev/null 2>&1 || topology_json='{}'
+gpu_json=$(echo "$gpu_json" | jq -c . 2>/dev/null) || true
+echo "$gpu_json" | jq -e . >/dev/null 2>&1 || gpu_json='[]'
+spec=$(echo "$spec" | jq -c . 2>/dev/null) || true
+echo "$spec" | jq -e . >/dev/null 2>&1 || spec='{}'
 
-# ── Build result ──
+TMP_GPU=$(mktemp -p "${HPC_WORK_DIR}" gpu_json.XXXXXX)
+TMP_SPEC=$(mktemp -p "${HPC_WORK_DIR}" gpu_spec.XXXXXX)
+TMP_NVL=$(mktemp -p "${HPC_WORK_DIR}" nvlink.XXXXXX)
+TMP_TOP=$(mktemp -p "${HPC_WORK_DIR}" topo.XXXXXX)
+printf '%s' "$gpu_json" > "$TMP_GPU"
+# Write only validated JSON to avoid slurpfile reading malformed spec from lookup_gpu_spec
+echo "$spec" | jq -c . > "$TMP_SPEC" 2>/dev/null || printf '%s' '{}' > "$TMP_SPEC"
+printf '%s' "$nvlink_json" > "$TMP_NVL"
+printf '%s' "$topology_json" > "$TMP_TOP"
+register_cleanup "$TMP_GPU" "$TMP_SPEC" "$TMP_NVL" "$TMP_TOP"
+
+# ── Build result (sanitize string args for JSON safety) ──
+driver_ver=$(printf '%s' "$driver_ver" | tr -d '\000-\037')
+cuda_ver=$(printf '%s' "$cuda_ver" | tr -d '\000-\037')
+nvcc_ver=$(printf '%s' "$nvcc_ver" | tr -d '\000-\037')
 RESULT=$(jq -n \
     --arg drv "$driver_ver" \
     --arg cuda "$cuda_ver" \
     --arg nvcc "$nvcc_ver" \
-    --argjson gpus "$gpu_json" \
-    --argjson spec "${spec:-{}}" \
-    --argjson nvlink "$nvlink_json" \
-    --argjson topo "$topology_json" \
+    --slurpfile gpus "$TMP_GPU" \
+    --slurpfile spec_arr "$TMP_SPEC" \
+    --slurpfile nvlink_arr "$TMP_NVL" \
+    --slurpfile topo_arr "$TMP_TOP" \
     --argjson virt "$VIRT_INFO" \
     --arg note "$VIRT_NOTE" \
-    '{
+    '$spec_arr[0] as $spec | $nvlink_arr[0] as $nvlink | $topo_arr[0] as $topo | {
         driver_version: $drv,
         cuda_version: $cuda,
         nvcc_version: $nvcc,
-        gpu_count: ($gpus | length),
-        gpus: $gpus,
+        gpu_count: ($gpus[0] | length),
+        gpus: $gpus[0],
         nvlink: $nvlink,
         topology: $topo,
         reference_spec: $spec,

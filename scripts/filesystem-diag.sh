@@ -20,6 +20,8 @@ if [ -n "$_df_out" ]; then
     ') || mounts_json="[]"
     echo "$mounts_json" | jq . >/dev/null 2>&1 || mounts_json="[]"
 fi
+# Ensure valid JSON for --argjson (avoid exit on invalid)
+echo "$mounts_json" | jq . >/dev/null 2>&1 || mounts_json="[]"
 
 # ── Parallel/network filesystems ──
 pfs_json="[]"
@@ -50,12 +52,15 @@ fi
 # ── RAID ──
 raid_json="{}"
 if has_cmd mdadm; then
-    md_arrays=$(cat /proc/mdstat 2>/dev/null | grep "^md" | wc -l)
+    md_arrays=$(cat /proc/mdstat 2>/dev/null | grep -c "^md" || echo "0")
     md_detail=$(mdadm --detail --scan 2>/dev/null || echo "none")
-    raid_json=$(jq -n --arg n "$md_arrays" --arg d "$md_detail" '{type:"mdadm",arrays:($n|tonumber),detail:$d}')
-elif has_cmd megacli; then
+    md_detail=$(printf '%s' "$md_detail" | tr -d '\000-\037"' | head -c 2000)
+    raid_json=$(jq -n --arg n "$md_arrays" --arg d "$md_detail" '{type:"mdadm",arrays:($n|tonumber),detail:$d}' 2>/dev/null) || true
+fi
+echo "$raid_json" | jq . >/dev/null 2>&1 || raid_json='{}'
+if [ "$raid_json" = '{}' ] && has_cmd megacli; then
     raid_json=$(jq -n '{type:"megacli",detail:"present"}')
-elif has_cmd storcli; then
+elif [ "$raid_json" = '{}' ] && has_cmd storcli; then
     raid_json=$(jq -n '{type:"storcli",detail:"present"}')
 fi
 
@@ -64,16 +69,29 @@ lvm_json="[]"
 if has_cmd lvs; then
     _lvs_out=$(try_sudo lvs --noheadings --reportformat json 2>/dev/null) || true
     if [ -n "$_lvs_out" ]; then
-        lvm_json=$(echo "$_lvs_out" | jq '.report[0].lv // []' 2>/dev/null) || lvm_json="[]"
+        lvm_json=$(echo "$_lvs_out" | jq '.report[0].lv // []' 2>/dev/null) || true
     fi
 fi
+echo "$lvm_json" | jq . >/dev/null 2>&1 || lvm_json="[]"
+echo "$pfs_json" | jq . >/dev/null 2>&1 || pfs_json="[]"
+
+# Use temp files for large/embedded JSON to avoid arg length and escaping with --argjson
+_tmp_m=$(mktemp -p "${HPC_WORK_DIR}" fs_mounts.XXXXXX)
+_tmp_p=$(mktemp -p "${HPC_WORK_DIR}" fs_pfs.XXXXXX)
+_tmp_r=$(mktemp -p "${HPC_WORK_DIR}" fs_raid.XXXXXX)
+_tmp_l=$(mktemp -p "${HPC_WORK_DIR}" fs_lvm.XXXXXX)
+printf '%s' "$mounts_json" > "$_tmp_m"
+printf '%s' "$pfs_json" > "$_tmp_p"
+printf '%s' "$raid_json" > "$_tmp_r"
+printf '%s' "$lvm_json" > "$_tmp_l"
+register_cleanup "$_tmp_m" "$_tmp_p" "$_tmp_r" "$_tmp_l"
 
 RESULT=$(jq -n \
-    --argjson mounts "$mounts_json" \
-    --argjson pfs "$pfs_json" \
-    --argjson raid "$raid_json" \
-    --argjson lvm "$lvm_json" \
-    '{mounts: $mounts, parallel_filesystems: $pfs, raid: $raid, lvm: $lvm}')
+    --slurpfile mounts "$_tmp_m" \
+    --slurpfile pfs "$_tmp_p" \
+    --slurpfile raid "$_tmp_r" \
+    --slurpfile lvm "$_tmp_l" \
+    '{mounts: $mounts[0], parallel_filesystems: $pfs[0], raid: $raid[0], lvm: $lvm[0]}')
 
 echo "$RESULT" | emit_json "filesystem-diag" "ok"
 log_ok "Filesystem diagnostics complete"

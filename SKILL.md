@@ -17,6 +17,19 @@ bash scripts/gpu-burn.sh
 
 ## Version History
 
+### V1.3 Changes (2026-02-11)
+
+**VM and robustness: fixes for virtualized environments and brittle scripts.**
+
+1. **gpu-inventory.sh** — VM-safe: (a) optional-field probe no longer triggers `set -e` when `nvidia-smi` exits non-zero; (b) driver/CUDA version queries use `|| true` so unsupported fields (e.g. `cuda_version` in VMs) don’t exit; (c) full GPU query fallback to base fields only when combined query returns no data; (d) OPT_JSON loop fixed (`$opt_first` as command ran `false` and exited — now use numeric flag); (e) all JSON for final jq passed via temp files + `--slurpfile` to avoid arg length and invalid spec from `lookup_gpu_spec`; (f) spec file written only after `jq -c` validation; (g) CUDA version fallback parse uses `sed` for version number only (avoids "|" from table).
+2. **lib/common.sh** — `lookup_gpu_spec`: validate and echo only valid JSON (exact and fuzzy paths); malformed spec now returns `{}`.
+3. **filesystem-diag.sh** — (a) RAID block: `md_arrays`/`md_detail` sanitized, jq failure doesn’t exit; (b) LVM/raid/pfs JSON validated before final jq; (c) mounts/pfs/raid/lvm passed via temp files + `--slurpfile` to avoid invalid/oversized `--argjson`.
+4. **nvbandwidth.sh** — When build or offline clone fails, emit `skipped` and exit 0 so suite doesn’t fail (VM/bare metal without nvbandwidth).
+5. **dcgm-diag.sh** — VM-aware: shorter timeout (120s) when virtualized; when all levels fail in a VM, emit `skipped` and exit 0.
+6. **gpu-burn.sh** — VM-aware: default burn duration 60s when virtualized (override with `GPU_BURN_DURATION`). JSON result fix: validate/normalize `gpu_gflops`; pass `errors` via `--arg` + `tonumber`; write `max_temps`/`max_power`/`gpu_gflops` to temp files and use `--slurpfile` to avoid invalid JSON and arg length issues.
+7. **hpl-mxp.sh** — When run produces no usable output (e.g. container SIGPIPE in VM), emit `skipped` and exit 0 when virtualized.
+8. **VERSION** — Bumped to 1.3.
+
 ### V1.2.2 Changes (2026-02-11)
 
 **P1 + P2 fixes: correctness, robustness, and hardening for DC deployment.**

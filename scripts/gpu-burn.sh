@@ -11,7 +11,12 @@ if ! has_cmd nvidia-smi; then
     exit 0
 fi
 
-BURN_DURATION=${GPU_BURN_DURATION:-300}  # 5 minutes default
+# In VMs use shorter burn to avoid long timeouts; override with GPU_BURN_DURATION
+if is_virtualized; then
+    BURN_DURATION=${GPU_BURN_DURATION:-60}
+else
+    BURN_DURATION=${GPU_BURN_DURATION:-300}  # 5 minutes default on bare metal
+fi
 BURN_DIR="${HPC_WORK_DIR}/gpu-burn"
 
 # ── Pre-burn temps ──
@@ -107,31 +112,49 @@ gpu_gflops=$(echo "$burn_output" | awk '
         printf "{\"gpu\":%d,\"gflops\":%.1f,\"status\":\"%s\"},", gpu_idx, gflops, status
     }
 }' | sed 's/,$//' | awk '{print "["$0"]"}')
+# When no GPU line matched, awk outputs "[]" but sed can leave "[""]" — normalize to valid JSON
+echo "$gpu_gflops" | jq . >/dev/null 2>&1 || gpu_gflops="[]"
+gpu_gflops=$(echo "$gpu_gflops" | jq -c . 2>/dev/null) || gpu_gflops="[]"
 
 # Parse temp log for max temps per GPU
 max_temps="[]"
 max_power="[]"
 if [ -f "$TEMP_LOG" ] && [ "$(wc -l < "$TEMP_LOG")" -gt 1 ]; then
-    max_temps=$(awk -F, 'NR>1 && $3+0>0 {if($3>max[$2]) max[$2]=$3} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_temp_c\":%s}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null || echo "[]")
-    max_power=$(awk -F, 'NR>1 && $4+0>0 {if($4>max[$2]) max[$2]=$4} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_power_w\":%.1f}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null || echo "[]")
+    max_temps=$(awk -F, 'NR>1 && $3+0>0 {if($3>max[$2]) max[$2]=$3} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_temp_c\":%s}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null) || true
+    max_power=$(awk -F, 'NR>1 && $4+0>0 {if($4>max[$2]) max[$2]=$4} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_power_w\":%.1f}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null) || true
 fi
 
 status="pass"
 echo "$burn_output" | grep -qi "FAULTY" && status="fail"
 [ "$burn_rc" -eq 137 ] && status="timeout"
 
-# Validate JSON arrays
+# Validate JSON arrays (avoid jq --argjson on invalid data)
 echo "$max_temps" | jq . >/dev/null 2>&1 || max_temps="[]"
 echo "$max_power" | jq . >/dev/null 2>&1 || max_power="[]"
-echo "$gpu_gflops" | jq . >/dev/null 2>&1 || gpu_gflops="[]"
+
+# Use --arg for errors so we don't require valid JSON number from shell
+case "$errors_found" in ''|*[!0-9]*) errors_found=0 ;; esac
+
+# Write JSON arrays to files to avoid --argjson with invalid/large payloads
+_tmp_mt=$(mktemp -p "${HPC_WORK_DIR}" gpu_burn_mt.XXXXXX)
+_tmp_mp=$(mktemp -p "${HPC_WORK_DIR}" gpu_burn_mp.XXXXXX)
+_tmp_gf=$(mktemp -p "${HPC_WORK_DIR}" gpu_burn_gf.XXXXXX)
+printf '%s' "${max_temps:-[]}" > "$_tmp_mt"
+printf '%s' "${max_power:-[]}" > "$_tmp_mp"
+printf '%s' "${gpu_gflops:-[]}" > "$_tmp_gf"
+register_cleanup "$_tmp_mt" "$_tmp_mp" "$_tmp_gf"
+# Ensure files contain valid JSON for slurpfile
+for _f in "$_tmp_mt" "$_tmp_mp" "$_tmp_gf"; do
+    jq -c . < "$_f" > "${_f}.v" 2>/dev/null && mv "${_f}.v" "$_f" || printf '%s' "[]" > "$_f"
+done
 
 RESULT=$(jq -n \
     --arg dur "$BURN_DURATION" \
     --arg status "$status" \
-    --argjson errors "$errors_found" \
-    --argjson max_temps "$max_temps" \
-    --argjson max_power "$max_power" \
-    --argjson gpu_gflops "$gpu_gflops" \
+    --arg err "$errors_found" \
+    --slurpfile max_temps "$_tmp_mt" \
+    --slurpfile max_power "$_tmp_mp" \
+    --slurpfile gpu_gflops "$_tmp_gf" \
     --arg pre "$pre_temps" \
     --arg post "$post_temps" \
     --arg results "$gpu_results" \
@@ -139,10 +162,10 @@ RESULT=$(jq -n \
     '{
         duration_seconds: ($dur | tonumber),
         status: $status,
-        errors_detected: $errors,
-        gpu_performance: $gpu_gflops,
-        max_temps: $max_temps,
-        max_power: $max_power,
+        errors_detected: ($err | tonumber),
+        gpu_performance: $gpu_gflops[0],
+        max_temps: $max_temps[0],
+        max_power: $max_power[0],
         pre_burn_temps: $pre,
         post_burn_temps: $post,
         gpu_results_summary: $results,

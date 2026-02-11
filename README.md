@@ -2,7 +2,7 @@
 
 A comprehensive benchmarking and diagnostics suite for high-performance computing (HPC) systems. Runs hardware discovery, GPU/CPU/network/storage benchmarks, and produces structured JSON results plus a markdown report.
 
-**Version:** 1.2.2 (see [VERSION](VERSION))
+**Version:** 1.3 (see [VERSION](VERSION))
 
 ## Features
 
@@ -69,7 +69,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 ## Repository layout
 
 ```
-├── VERSION              # Single source of truth for version (e.g. 1.2.2)
+├── VERSION              # Single source of truth for version (e.g. 1.3)
 ├── README.md            # This file
 ├── lib/
 │   └── common.sh        # Shared bash helpers (logging, JSON, GPU spec lookup, etc.)

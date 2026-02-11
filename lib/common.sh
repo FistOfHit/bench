@@ -204,7 +204,7 @@ lookup_gpu_spec() {
     local result
     result=$(jq --arg m "$model" '.gpus[$m] // empty' "$HPC_SPECS_FILE" 2>/dev/null)
     if [ -n "$result" ]; then
-        echo "$result"
+        echo "$result" | jq -c . >/dev/null 2>&1 && echo "$result" || echo '{}'
         return
     fi
 
@@ -258,11 +258,11 @@ else:
     print('{}')
 " "$model" 2>/dev/null) || result='{}'
 
-    # Ensure valid JSON output
+    # Ensure valid JSON output (fuzzy match or jq @json can occasionally be malformed)
     if [ -z "$result" ] || [ "$result" = "null" ]; then
         result='{}'
     fi
-    echo "$result"
+    echo "$result" | jq -c . >/dev/null 2>&1 && echo "$result" || echo '{}'
 }
 
 # ── Cleanup registration ──
