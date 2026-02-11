@@ -2,7 +2,7 @@
 
 A comprehensive benchmarking and diagnostics suite for high-performance computing (HPC) systems. Runs hardware discovery, GPU/CPU/network/storage benchmarks, and produces structured JSON results plus a markdown report.
 
-**Version:** 1.3 (see [VERSION](VERSION))
+**Version:** 1.4 (see [VERSION](VERSION))
 
 ## Features
 
@@ -22,11 +22,15 @@ Results are written as JSON per module and can be consumed by the bundled report
 
 Bootstrap will attempt to install core packages when run as root with network access; use `--check-only` to see what’s missing without installing.
 
+## Target environment
+
+**This suite is designed for bare-metal HPC servers.** Virtual machines (VMs) are not the intended target: several benchmarks (DCGM, nvbandwidth, HPL-MxP, InfiniBand, BMC) require real hardware or full GPU/PCIe topology and will skip or may fail in VMs. If you run on a VM anyway, the suite will skip unsupported modules and complete with a reduced set of results; use `HPC_QUICK=1` for shorter storage runs when iterating (e.g. CI or smoke tests). See [SKILL.md](SKILL.md) version history for VM-related behavior and fixes.
+
 ## Quick start
 
 ```bash
 # Clone or unpack the suite, then from the repo root:
-cd /path/to/hpc-bench-v1.2.2
+cd /path/to/hpc-bench
 
 # 1. Bootstrap (install dependencies, detect hardware) — requires root
 sudo bash scripts/bootstrap.sh
@@ -65,11 +69,12 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 | `HPC_WORK_DIR` | `/tmp/hpc-bench-work` | Build and temporary working files |
 | `MAX_MODULE_TIME` | `1800` | Timeout in seconds per module in `run-all.sh` |
 | `HPC_KEEP_TOOLS` | `0` | Set to `1` to skip cleanup of built tools in work dir |
+| `HPC_QUICK` | *(unset)* | Set to `1` to shorten storage-bench fio runtime (15s per profile) for quick/CI runs |
 
 ## Repository layout
 
 ```
-├── VERSION              # Single source of truth for version (e.g. 1.3)
+├── VERSION              # Single source of truth for version (e.g. 1.4)
 ├── README.md            # This file
 ├── lib/
 │   └── common.sh        # Shared bash helpers (logging, JSON, GPU spec lookup, etc.)

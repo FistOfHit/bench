@@ -27,7 +27,9 @@ else
     FIO_SIZE="4G"
 fi
 
-FIO_RUNTIME=60
+# Shorter run for VM/CI when HPC_QUICK=1 (default 60s per profile)
+FIO_RUNTIME=${HPC_QUICK:+15}
+FIO_RUNTIME=${FIO_RUNTIME:-60}
 FIO_COMMON="--directory=$TEST_DIR --size=$FIO_SIZE --runtime=$FIO_RUNTIME --time_based --group_reporting"
 
 # ── Run fio profiles ──
@@ -36,12 +38,12 @@ run_fio() {
     log_info "fio: $name"
     local output_file="/tmp/fio-${name}-$$.json"
     rm -f "$output_file"
-    
+
     # Use fio's native --output flag to write JSON directly to file
     # This avoids stdout contamination from progress/status messages
     timeout 120 fio --name="$name" $FIO_COMMON --output-format=json --output="$output_file" "$@" \
         2>>"${HPC_LOG_DIR}/fio-${name}.log" || true
-    
+
     # Parse the JSON output
     if [ -f "$output_file" ] && [ -s "$output_file" ]; then
         local parsed
@@ -54,14 +56,14 @@ run_fio() {
             write_iops: (.jobs[0].write.iops // 0),
             write_lat_usec: ((.jobs[0].write.lat_ns.mean // 0) / 1000)
         }' "$output_file" 2>/dev/null)
-        
+
         if [ -n "$parsed" ] && echo "$parsed" | jq . >/dev/null 2>&1; then
             rm -f "$output_file"
             echo "$parsed"
             return
         fi
     fi
-    
+
     rm -f "$output_file"
     log_warn "fio $name: failed to parse output"
     echo '{"error":"parse failed"}'

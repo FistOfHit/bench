@@ -185,15 +185,17 @@ ARCHIVE_PATH="${HPC_RESULTS_DIR}/${ARCHIVE_NAME}"
 
 log_info "Bundling results archive..."
 # Archive all JSON, report, and logs into a single portable file
-tar czf "$ARCHIVE_PATH" \
+_archive_err=$(mktemp)
+if tar czf "$ARCHIVE_PATH" \
     -C "$(dirname "$HPC_RESULTS_DIR")" \
     "$(basename "$HPC_RESULTS_DIR")" \
-    2>/dev/null && {
+    2>"$_archive_err"; then
     log_ok "Results archive: $ARCHIVE_PATH"
     log_info "  Transfer with: scp ${ARCHIVE_PATH} user@host:/path/"
-} || {
-    log_warn "Failed to create results archive (non-fatal)"
-}
+else
+    log_warn "Failed to create results archive (non-fatal): $(cat "$_archive_err" 2>/dev/null | head -3)"
+fi
+rm -f "$_archive_err"
 
 # ═══════════════════════════════════════════
 # Acceptance Gate

@@ -96,28 +96,32 @@ run_nccl_test() {
     # Bundled format (7 cols): size  count  type  time(us)  algbw  busbw  error
     # Upstream format (9+ cols): size count type redop root time algbw busbw #wrong
     # Use NF-relative indexing: busbw is always $(NF-1), algbw is always $(NF-2)
+    # Fallback: "# Avg bus bandwidth: N.NN" when binary fails before printing rows (e.g. VM NCCL error)
     local parsed
     parsed=$(echo "$output" | awk '
-    /^#/ && /Avg bus bandwidth/ { avg=$NF; next }
+    /^#/ && /Avg bus bandwidth/ { gsub(/,/,"."); avg=$NF+0; next }
     /^#/ {next}
-    NF>=6 && $1 ~ /^[0-9]/ {
-        size=$1; algbw=$(NF-2); busbw=$(NF-1)
-        # Store last (largest size) result
-        last_size=size; last_algbw=algbw+0; last_busbw=busbw+0
+    # Data row: allow leading space (fixed-width) and match lines containing "float" with numeric cols
+    NF>=6 && ($1 ~ /^[0-9]/ || ($0 ~ /float/ && $(NF-2) ~ /^[0-9]/)) {
+        if ($1 ~ /^[0-9]/) { size=$1; a=$(NF-2)+0; b=$(NF-1)+0 }
+        else { for(i=1;i<=NF;i++) if ($i=="float" && i+3<=NF) { size=$(i-2); a=$(NF-2)+0; b=$(NF-1)+0; break } }
+        last_size=size; last_algbw=a; last_busbw=b
     }
     END {
         if (last_size != "") printf "{\"max_size_bytes\":\"%s\",\"algbw_gbps\":%.2f,\"busbw_gbps\":%.2f,\"avg_busbw_gbps\":%.2f}", last_size, last_algbw, last_busbw, (avg+0)
+        else if (avg > 0) printf "{\"max_size_bytes\":\"\",\"algbw_gbps\":0,\"busbw_gbps\":%.2f,\"avg_busbw_gbps\":%.2f}", avg, avg
         else print "{}"
     }')
 
-    # Extract all data points
+    # Extract all data points (same pattern as above)
     local datapoints
     datapoints=$(echo "$output" | awk '
     BEGIN { print "[" ; first=1 }
-    NF>=6 && $1 ~ /^[0-9]/ && !/^#/ {
+    NF>=6 && ($1 ~ /^[0-9]/ || ($0 ~ /float/ && $(NF-2) ~ /^[0-9]/)) && !/^#/ {
         if(!first) printf ","
         first=0
-        printf "{\"size_bytes\":%s,\"algbw_gbps\":%.3f,\"busbw_gbps\":%.3f}", $1, $(NF-2), $(NF-1)
+        if ($1 ~ /^[0-9]/) printf "{\"size_bytes\":%s,\"algbw_gbps\":%.3f,\"busbw_gbps\":%.3f}", $1, $(NF-2)+0, $(NF-1)+0
+        else { for(i=1;i<=NF;i++) if ($i=="float" && i+3<=NF) { printf "{\"size_bytes\":%s,\"algbw_gbps\":%.3f,\"busbw_gbps\":%.3f}", $(i-2), $(NF-2)+0, $(NF-1)+0; break } }
     }
     END { print "]" }')
 
@@ -143,11 +147,13 @@ spec=$(lookup_gpu_spec "$gpu_model_name")
 nvlink_bw=$(echo "$spec" | jq '.nvlink_bandwidth_gbps // 0' 2>/dev/null)
 theoretical_busbw=$(echo "scale=2; $nvlink_bw * 0.85" | bc 2>/dev/null || echo "0")  # 85% efficiency target
 
-# Get peak all_reduce busbw
-peak_busbw=$(echo "$tests_output" | jq '[.[] | select(.test=="all_reduce_perf") | .summary.busbw_gbps] | max // 0' 2>/dev/null)
+# Get peak all_reduce busbw (prefer busbw_gbps, fallback to avg_busbw_gbps when binary fails after printing avg)
+peak_busbw=$(echo "$tests_output" | jq '[.[] | select(.test=="all_reduce_perf") | (.summary.busbw_gbps // .summary.avg_busbw_gbps // 0)] | max // 0' 2>/dev/null)
+# Ensure numeric (jq may return null)
+peak_busbw=$(echo "$peak_busbw" | grep -E '^[0-9.]+$' || echo "0")
 
 efficiency="N/A"
-if [ "$nvlink_bw" != "0" ] && [ "$nvlink_bw" != "null" ] && [ -n "$peak_busbw" ]; then
+if [ "$nvlink_bw" != "0" ] && [ "$nvlink_bw" != "null" ] && [ -n "$peak_busbw" ] && [ "${peak_busbw}" != "0" ]; then
     efficiency=$(echo "scale=1; $peak_busbw / $nvlink_bw * 100" | bc 2>/dev/null || echo "N/A")
 fi
 

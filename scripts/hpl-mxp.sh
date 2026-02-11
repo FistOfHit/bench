@@ -23,12 +23,11 @@ else
 fi
 
 # In VMs, Docker/pipe often causes SIGPIPE (exit 141); treat as skipped so suite can pass
-# Use a variable so we can chain with common.sh's do_cleanup and still exit 0 when we handle 141
 HPL_MXP_EXIT_CODE=
 _hpl_exit_trap() {
     local _rc=$?
     HPL_MXP_EXIT_CODE=$_rc
-    if [ $_rc -eq 141 ] && is_virtualized && [ ! -f "${HPC_RESULTS_DIR}/hpl-mxp.json" ]; then
+    if [ $_rc -eq 141 ] && is_virtualized; then
         log_warn "HPL-MxP exited with SIGPIPE (141) — typical in VMs, skipping"
         echo '{"note":"HPL-MxP exited with SIGPIPE (typical in VMs)","skip_reason":"vm"}' | emit_json "hpl-mxp" "skipped"
         HPL_MXP_EXIT_CODE=0

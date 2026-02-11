@@ -16,8 +16,6 @@ int main(int argc, char* argv[]) {
     /* Allocate send/recv buffers on each GPU */
     float** sendbuff = (float**)malloc(nGpus * sizeof(float*));
     float** recvbuff = (float**)malloc(nGpus * sizeof(float*));
-    size_t maxCount = params.maxBytes / sizeof(float);
-
     for (int i = 0; i < nGpus; i++) {
         CUDACHECK(cudaSetDevice(i));
         CUDACHECK(cudaMalloc(&sendbuff[i], params.maxBytes));
