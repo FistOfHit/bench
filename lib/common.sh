@@ -148,6 +148,10 @@ detect_virtualization() {
         virt_details="container"
     fi
 
+    # Strip control characters so jq never sees invalid JSON (e.g. systemd-detect-virt or DMI can emit stray bytes)
+    virt_type=$(printf '%s' "$virt_type" | tr -d '\000-\037')
+    virt_details=$(printf '%s' "$virt_details" | tr -d '\000-\037')
+
     echo "{\"type\": \"$virt_type\", \"details\": \"$virt_details\"}"
 }
 

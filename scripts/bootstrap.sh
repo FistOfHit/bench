@@ -13,15 +13,19 @@ for arg in "$@"; do
     esac
 done
 
-# ── Ensure jq so common.sh and rest of bootstrap can run (root + package manager only) ──
-if [ "$(id -u)" -eq 0 ] && ! command -v jq &>/dev/null; then
-    if command -v apt-get &>/dev/null; then
-        apt-get update -qq 2>/dev/null; apt-get install -y jq 2>/dev/null || true
-    elif command -v dnf &>/dev/null; then
-        dnf install -y jq 2>/dev/null || true
-    elif command -v yum &>/dev/null; then
-        yum install -y jq 2>/dev/null || true
-    fi
+# ── Ensure jq and curl so common.sh and connectivity check can run (root + package manager only) ──
+if [ "$(id -u)" -eq 0 ]; then
+    for _pkg in jq curl; do
+        if ! command -v "$_pkg" &>/dev/null; then
+            if command -v apt-get &>/dev/null; then
+                apt-get update -qq 2>/dev/null; apt-get install -y "$_pkg" 2>/dev/null || true
+            elif command -v dnf &>/dev/null; then
+                dnf install -y "$_pkg" 2>/dev/null || true
+            elif command -v yum &>/dev/null; then
+                yum install -y "$_pkg" 2>/dev/null || true
+            fi
+        fi
+    done
 fi
 
 source "$(dirname "$0")/../lib/common.sh"
@@ -128,17 +132,24 @@ if [ "$CHECK_ONLY" = true ]; then
 fi
 
 # ── Connectivity preflight ──
+# Tries multiple hosts in case one is blocked by firewall/proxy. Under sudo, proxy env (HTTP_PROXY/HTTPS_PROXY) may not be set.
 HAS_INTERNET=false
 log_info "Checking internet/repository connectivity..."
-if curl -sI --connect-timeout 5 https://google.com &>/dev/null || \
-   curl -sI --connect-timeout 5 https://archive.ubuntu.com &>/dev/null || \
-   curl -sI --connect-timeout 5 https://mirror.centos.org &>/dev/null; then
-    HAS_INTERNET=true
-    log_info "Internet connectivity: OK"
-else
+for _url in https://google.com https://archive.ubuntu.com https://mirror.centos.org https://cloudflare.com https://1.1.1.1; do
+    if curl -sI --connect-timeout 5 "$_url" &>/dev/null; then
+        HAS_INTERNET=true
+        log_info "Internet connectivity: OK (reachable: $_url)"
+        break
+    fi
+done
+if [ "$HAS_INTERNET" = false ]; then
     log_warn "No internet/repository access — will skip package installation"
     log_warn "Pre-install packages manually or use --check-only to see what's needed"
-    # Don't exit — continue with what's available (air-gapped mode)
+    # Show why (e.g. DNS vs timeout); use a short timeout so we don't hang
+    _err=$(curl -sI --connect-timeout 3 https://archive.ubuntu.com 2>&1) || true
+    if [ -n "$_err" ]; then
+        log_info "Connectivity check hint: $(echo "$_err" | head -1)"
+    fi
 fi
 
 if [ "$HAS_INTERNET" = true ]; then
@@ -172,8 +183,10 @@ else
 fi
 
 # ── NVIDIA GPU detection (PCI: no driver required) ──
+# Prefer lspci; fallback to /sys (vendor 0x10de = NVIDIA) when lspci missing or PATH limited under sudo.
 NVIDIA_GPU_PRESENT=false
-if lspci 2>/dev/null | grep -qi 'nvidia\|10de'; then
+if (command -v lspci &>/dev/null && lspci 2>/dev/null | grep -qi 'nvidia\|10de') || \
+   grep -ql '0x10de' /sys/bus/pci/devices/*/vendor 2>/dev/null; then
     NVIDIA_GPU_PRESENT=true
 fi
 
@@ -200,26 +213,55 @@ else
 fi
 
 # ── --install-nvidia: install driver when GPU present but no working driver (Ubuntu, internet required) ──
-if [ "$INSTALL_NVIDIA" = true ] && [ "$NVIDIA_GPU_PRESENT" = true ] && [ "$HAS_GPU" = false ] && [ "$HAS_INTERNET" = true ] && [ "$PKG_MGR" = "apt" ]; then
-    log_info "Installing NVIDIA driver (--install-nvidia, Ubuntu)..."
-    # Add NVIDIA CUDA repo for driver + toolkit
-    if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
-        DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/3bf863cc.pub"
-        curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
-        echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/ /" \
-            > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
-        apt-get update 2>/dev/null || true
-    fi
-    if apt-get install -y nvidia-driver-535 2>/dev/null; then
-        log_ok "NVIDIA driver installed."
-        echo ""
-        echo "  Reboot required for the driver to load. After reboot, run:"
-        echo "    sudo bash scripts/bootstrap.sh --install-nvidia"
-        echo "  Then run the full suite as usual."
-        echo ""
-        exit 0
+if [ "$INSTALL_NVIDIA" = true ]; then
+    if [ "$NVIDIA_GPU_PRESENT" = true ] && [ "$HAS_GPU" = false ] && [ "$HAS_INTERNET" = true ] && [ "$PKG_MGR" = "apt" ]; then
+        log_info "Installing NVIDIA driver (--install-nvidia, Ubuntu)..."
+        # Add NVIDIA CUDA repo for driver + toolkit
+        if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
+            DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/3bf863cc.pub"
+            curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
+            echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/ /" \
+                > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
+            apt-get update 2>/dev/null || true
+        fi
+        if apt-get install -y nvidia-driver-580-server 2>/dev/null; then
+            log_ok "NVIDIA driver installed."
+            echo ""
+            echo "  Reboot required for the driver to load. After reboot, run:"
+            echo "    sudo bash scripts/bootstrap.sh --install-nvidia"
+            echo "  Then run the full suite as usual."
+            echo ""
+            exit 0
+        else
+            log_warn "NVIDIA driver install failed (try: apt-get install -y nvidia-driver-580-server)"
+        fi
     else
-        log_warn "NVIDIA driver install failed (try: apt-get install -y nvidia-driver-535)"
+        # --install-nvidia was requested but we didn't install the driver — explain why and optionally install CUDA toolkit
+        if [ "$NVIDIA_GPU_PRESENT" = false ]; then
+            log_warn "Skipping NVIDIA driver install: no NVIDIA GPU detected on this system (lspci)."
+            log_info "Use --install-nvidia on a machine with an NVIDIA GPU to install the driver."
+            if [ "$HAS_INTERNET" = true ] && [ "$PKG_MGR" = "apt" ] && ! command -v nvcc &>/dev/null; then
+                log_info "Installing CUDA toolkit only (nvcc, libs) for development / future GPU..."
+                if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
+                    DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/3bf863cc.pub"
+                    curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
+                    echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/ /" \
+                        > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
+                    apt-get update 2>/dev/null || true
+                fi
+                if apt-get install -y cuda-toolkit-12-2 2>/dev/null || apt-get install -y cuda-toolkit-12-0 2>/dev/null; then
+                    log_ok "CUDA toolkit installed (nvcc). Add /usr/local/cuda/bin to PATH when using a GPU."
+                else
+                    log_warn "CUDA toolkit install failed (repo or network)."
+                fi
+            fi
+        elif [ "$HAS_GPU" = true ]; then
+            log_info "NVIDIA driver already working (nvidia-smi OK). Skipping driver install."
+        elif [ "$HAS_INTERNET" = false ]; then
+            log_warn "Skipping NVIDIA install: no internet. Connect and re-run with --install-nvidia."
+        elif [ "$PKG_MGR" != "apt" ]; then
+            log_warn "Skipping NVIDIA driver install: only supported for apt (Debian/Ubuntu). Install driver manually."
+        fi
     fi
 fi
 
