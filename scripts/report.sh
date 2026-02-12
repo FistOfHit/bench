@@ -355,8 +355,11 @@ if has_result "storage-bench" && [ "$(mod_status storage-bench)" != "skipped" ];
     for test_key in sequential_read_1M sequential_write_1M random_4k_read random_4k_write mixed_randrw_70_30 sequential_read_128k_qd128; do
         label=$(echo "$test_key" | tr '_' ' ')
         has_error=$(jq -r ".${test_key}.error // empty" "$STG" 2>/dev/null)
+        is_skipped=$(jq -r ".${test_key}.quick_mode_skip // empty" "$STG" 2>/dev/null)
         if [ -n "$has_error" ]; then
             echo "| ${label} | ⚠ ${has_error} | | | | | |"
+        elif [ "$is_skipped" = "true" ]; then
+            echo "| ${label} | *(skipped — quick mode)* | | | | | |"
         else
             r_bw=$(jf "$STG" ".${test_key}.read_bw_mbps" '-')
             w_bw=$(jf "$STG" ".${test_key}.write_bw_mbps" '-')

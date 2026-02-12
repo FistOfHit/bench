@@ -4,6 +4,60 @@ All notable changes to the HPC Bench Suite are documented here. Version number i
 
 ## Version History
 
+### V1.9 Changes (2026-02-12)
+
+1. **scripts/bootstrap.sh** — Dynamic NVIDIA stack install improvements:
+   - Auto-detect latest `nvidia-driver-*-server` package (fallback to `580-server`).
+   - Dynamically discovers available `cuda-toolkit-X-Y` packages (no hardcoded version pins).
+   - Uses `DEBIAN_FRONTEND=noninteractive` for unattended installs.
+   - Emits clean JSON and clear reboot guidance when driver install requires reboot.
+2. **scripts/bootstrap.sh** — Added optional container-runtime installer:
+   - New flag: `--install-nvidia-container-toolkit`.
+   - Installs/configures Docker + NVIDIA Container Toolkit on Ubuntu (`apt` path).
+   - Runs `nvidia-ctk runtime configure --runtime=docker`, restarts Docker, and verifies runtime availability.
+   - Bootstrap summary now includes `has_nvidia_container_runtime`.
+3. **scripts/bootstrap.sh** — Combined-flow UX for first-time GPU setup:
+   - Supports using `--install-nvidia --install-nvidia-container-toolkit` together.
+   - Post-reboot checklist text now explicitly guides rerun of the combined command.
+4. **scripts/run-all.sh** — Added early runtime gate (`Phase 0.5`):
+   - New module `scripts/runtime-sanity.sh` runs immediately after bootstrap.
+   - Verifies GPU driver, Docker runtime, NVIDIA container runtime, and DCGM availability before benchmark phases.
+5. **scripts/runtime-sanity.sh** — New fail-fast and auto-install controls:
+   - `HPC_AUTO_INSTALL_CONTAINER_RUNTIME=1` attempts automatic runtime installation when GPU exists but NVIDIA container runtime is missing.
+   - `HPC_FAIL_FAST_RUNTIME=1` fails immediately (error JSON + non-zero exit) when runtime prerequisites are missing.
+6. **scripts/run-all.sh** — New CLI flags for runtime controls:
+   - `--auto-install-runtime` and `--fail-fast-runtime`.
+   - Runtime mode state is logged in run banner.
+   - If fail-fast is enabled and runtime-sanity reports error, run exits before Phase 1.
+7. **scripts/gpu-inventory.sh** — GPU count consistency fix:
+   - `gpu_count` now comes from authoritative `nvidia-smi --query-gpu=index` counting, with parser-length fallback.
+   - Prevents undercount when field parsing and reported GPU array diverge.
+8. **scripts/thermal-power.sh** — GPU count alignment fix:
+   - Runtime GPU count now prioritizes direct `nvidia-smi` detection and harmonizes with `gpu-inventory.json`.
+   - Eliminates mismatches where thermal report showed fewer GPUs than detected elsewhere.
+9. **scripts/run-all.sh** — Orchestrator resilience and startup improvements:
+   - Safely continues after per-module failures (does not crash whole orchestrator).
+   - Added GPU warm-up before parallel inventory fan-out to avoid initial driver/DCGM lock contention.
+10. **scripts/nvbandwidth.sh** — Fixed JSON fallback bug (`"${bw_values:-{}}"`) that could append a stray `}` and break `jq` parsing; replaced with explicit empty-check handling.
+11. **scripts/gpu-inventory.sh** — Fixed CUDA version parsing by anchoring to `CUDA Version:` to avoid truncating values like `13.0` to `3.0`.
+12. **scripts/gpu-burn.sh** — Quick-mode reliability:
+    - Increased quick burn duration from 3s to 10s so GFLOPS lines are consistently emitted.
+    - Added parser fallback for progress-line GFLOPS format used by newer gpu-burn output.
+13. **scripts/report.sh** — Quick-mode storage reporting clarity:
+    - Detects `quick_mode_skip: true` and renders "skipped — quick mode" instead of misleading zeros.
+14. **README.md** — Documentation updates:
+    - Safer SSH host-key remediation (`ssh-keygen -R <host-or-ip>`).
+    - New bootstrap flag docs for NVIDIA container toolkit setup.
+    - Combined bootstrap workflow docs (driver + runtime).
+    - New `run-all` runtime controls and environment variables documented.
+
+**Validation notes (V1.9):**
+- Repeated end-to-end `--quick` runs validated on remote Ubuntu 24.04 KVM host with H100 GPUs.
+- Verified full reinstall cycle (purge CUDA user-space + Docker/runtime, then reinstall via combined bootstrap flags).
+- Runtime sanity behavior validated for:
+  - **positive path** (`--auto-install-runtime --fail-fast-runtime` with runtime available),
+  - **fail-fast path** (forced missing runtime context; early exit with rc=1 before benchmark phases).
+
 ### V1.8 Changes (2026-02-11)
 
 1. **run-all.sh** — `--smoke` flag: bootstrap + discovery + report only (no benchmarks); Phase 1 (discovery) runs in parallel; skipped modules show short reason (`.note`/`.skip_reason`) in checklist.

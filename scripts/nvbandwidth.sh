@@ -141,7 +141,9 @@ elif values:
 else:
     print('{}')
 " 2>/dev/null || echo '{}')
-    echo "${bw_values:-{}}"
+    # Avoid ${var:-{}} brace-matching bug — trailing } becomes literal, corrupting JSON
+    [ -z "$bw_values" ] && bw_values='{}'
+    echo "$bw_values"
 }
 
 # Test categories
@@ -158,6 +160,17 @@ gpu_model_name=$(gpu_model)
 spec=$(lookup_gpu_spec "$gpu_model_name")
 pcie_bw=$(echo "$spec" | jq '.pcie_bandwidth_gbps // 0' 2>/dev/null)
 mem_bw=$(echo "$spec" | jq '.memory_bandwidth_gbps // 0' 2>/dev/null)
+
+# Validate JSON before passing to --argjson (avoid crash on empty/invalid output)
+for _var in h2d d2h d2d d2d_write d2d_bidir; do
+    eval "_val=\$$_var"
+    if [ -z "$_val" ] || ! echo "$_val" | jq . >/dev/null 2>&1; then
+        eval "$_var='{}'"
+    fi
+done
+# Ensure spec values have sensible defaults
+pcie_bw="${pcie_bw:-0}"
+mem_bw="${mem_bw:-0}"
 
 RESULT=$(jq -n \
     --argjson h2d "$h2d" \

@@ -2,11 +2,11 @@
 
 A comprehensive benchmarking and diagnostics suite for high-performance computing (HPC) systems. Runs hardware discovery, GPU/CPU/network/storage benchmarks, and produces structured JSON results plus a markdown report.
 
-**Version:** 1.8 (see [VERSION](VERSION))
+**Version:** 1.9 (see [VERSION](VERSION))
 
 ## Features
 
-- **Bootstrap** — Detects OS and hardware, installs dependencies (jq, curl, dmidecode, DCGM, NCCL, InfiniBand tools, Boost for nvbandwidth when GPU present, etc.). Use `--check-only` for a dry-run. On Ubuntu with an NVIDIA GPU, use `--install-nvidia` to install the NVIDIA driver and CUDA toolkit (internet required; reboot after driver install).
+- **Bootstrap** — Detects OS and hardware, installs dependencies (jq, curl, dmidecode, DCGM, NCCL, InfiniBand tools, Boost for nvbandwidth when GPU present, etc.). Use `--check-only` for a dry-run. On Ubuntu with an NVIDIA GPU, use `--install-nvidia` to install the NVIDIA driver and CUDA toolkit (internet required; reboot after driver install). Use `--install-nvidia-container-toolkit` to install/configure Docker + NVIDIA container runtime (needed for `hpl-mxp`).
 - **Discovery & inventory** — CPU, GPU, topology, network, BMC, software audit
 - **Benchmarks** — DCGM diagnostics, GPU burn-in, NCCL tests, NVLink bandwidth, STREAM, storage (fio), HPL (CPU/GPU), InfiniBand tests
 - **Diagnostics** — Network, filesystem, thermal/power, security scan
@@ -20,7 +20,7 @@ Results are written as JSON per module and can be consumed by the bundled report
 - **Privilege:** Root (or sudo) for bootstrap and full suite. Non-root runs are supported: results go to `$HOME/.local/var/hpc-bench/results` and root-only modules (bootstrap, bmc-inventory) are skipped.
 - **Tools:** `jq` (1.6+), `bash` (4+), `python3` (required by several helpers in `lib/common.sh`). Bootstrap installs jq when missing. Optional: NVIDIA driver/CUDA, DCGM, NCCL, InfiniBand stack, Docker (for HPL-MxP).
 
-Bootstrap installs jq and other core packages when run as root with network access; use `--check-only` to see what’s missing without installing. When GPUs are detected, Boost (libboost-dev / boost-devel) is also installed to improve nvbandwidth build-from-source; nvbandwidth can still skip on some distros and is non-fatal. **Installing NVIDIA stack:** On a fresh Ubuntu system with an NVIDIA GPU, run `sudo bash scripts/bootstrap.sh --install-nvidia`. Internet is required. After the driver is installed, reboot and run bootstrap again (with or without `--install-nvidia`) to complete CUDA toolkit, DCGM, and NCCL setup.
+Bootstrap installs jq and other core packages when run as root with network access; use `--check-only` to see what’s missing without installing. When GPUs are detected, Boost (libboost-dev / boost-devel) is also installed to improve nvbandwidth build-from-source; nvbandwidth can still skip on some distros and is non-fatal. **Installing NVIDIA stack:** On a fresh Ubuntu system with an NVIDIA GPU, run `sudo bash scripts/bootstrap.sh --install-nvidia`. Internet is required. After the driver is installed, reboot and run bootstrap again (with or without `--install-nvidia`) to complete CUDA toolkit, DCGM, and NCCL setup. To enable GPU-capable containers for `hpl-mxp`, run `sudo bash scripts/bootstrap.sh --install-nvidia-container-toolkit`. You can also combine both flags in one workflow, then reboot when prompted, and run the same combined command once more.
 
 ## Target environment
 
@@ -37,6 +37,12 @@ sudo bash scripts/bootstrap.sh
 
 # On fresh Ubuntu with an NVIDIA GPU, install driver + CUDA (internet required; reboot after driver install, then run bootstrap again):
 #   sudo bash scripts/bootstrap.sh --install-nvidia
+# Optional: install Docker + NVIDIA container runtime (for hpl-mxp):
+#   sudo bash scripts/bootstrap.sh --install-nvidia-container-toolkit
+# Combined flow (recommended when you want hpl-mxp too):
+#   sudo bash scripts/bootstrap.sh --install-nvidia --install-nvidia-container-toolkit
+#   # reboot when prompted
+#   sudo bash scripts/bootstrap.sh --install-nvidia --install-nvidia-container-toolkit
 
 # 2. Run full suite (all phases: bootstrap, inventory, benchmarks, diagnostics, report)
 sudo bash scripts/run-all.sh
@@ -46,6 +52,12 @@ sudo bash scripts/run-all.sh --quick
 
 # Or smoke mode (bootstrap + inventory + report only, no benchmarks; under ~1 min):
 sudo bash scripts/run-all.sh --smoke
+
+# Runtime sanity controls:
+# - auto-install runtime if missing (Docker + NVIDIA container runtime)
+sudo bash scripts/run-all.sh --quick --auto-install-runtime
+# - fail fast immediately when runtime sanity fails
+sudo bash scripts/run-all.sh --quick --fail-fast-runtime
 ```
 
 **Run on a remote host (single command):**
@@ -56,6 +68,14 @@ ssh user@host 'cd /tmp/hpc-bench && sudo ./scripts/run-all.sh --quick'
 # Then fetch the report and archive:
 scp user@host:/var/log/hpc-bench/results/report.md .
 scp user@host:/var/log/hpc-bench/results/hpc-bench-*.tar.gz .
+```
+
+If SSH reports `REMOTE HOST IDENTIFICATION HAS CHANGED`, remove only the stale host entry (safer than deleting all known hosts):
+
+```bash
+ssh-keygen -R <host-or-ip>
+# Example:
+ssh-keygen -R 38.128.232.215
 ```
 
 Results go to `/var/log/hpc-bench/results/` by default when run as root (override with `HPC_RESULTS_DIR`). When run as non-root, results go to `$HOME/.local/var/hpc-bench/results`. See **Viewing results** below for where to find the report and logs.
@@ -126,6 +146,8 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 | `HPC_KEEP_TOOLS` | `0` | Set to `1` to keep gpu-burn, nccl-tests, STREAM builds in work dir; subsequent runs skip rebuilds (faster iteration). |
 | `HPC_QUICK` | *(unset)* | Set to `1` or use `run-all.sh --quick` for quick benchmark mode: short runs (DCGM r1 only, 3s GPU burn, tiny HPL, short NCCL/STREAM/fio) to verify the suite end-to-end |
 | `HPC_SMOKE` | *(unset)* | Set by `run-all.sh --smoke`: run only bootstrap, discovery/inventory, and report (no benchmarks); under ~1 min for “did it install and detect?” |
+| `HPC_AUTO_INSTALL_CONTAINER_RUNTIME` | `0` | Set to `1` to let `run-all.sh` auto-run `bootstrap.sh --install-nvidia-container-toolkit` during early runtime sanity if GPU is present but NVIDIA container runtime is missing (requires root + internet). |
+| `HPC_FAIL_FAST_RUNTIME` | `0` | Set to `1` to make early runtime sanity fail immediately when GPU driver is present but NVIDIA container runtime is missing. |
 
 ## Repository layout
 
@@ -146,6 +168,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 │   ├── network-inventory.sh
 │   ├── bmc-inventory.sh
 │   ├── software-audit.sh
+│   ├── runtime-sanity.sh
 │   ├── dcgm-diag.sh
 │   ├── gpu-burn.sh
 │   ├── nccl-tests.sh

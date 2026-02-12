@@ -102,11 +102,14 @@ fi
 
 # ── GPU count from single source (gpu-inventory or nvidia-smi) for report consistency ──
 GPU_COUNT_REPORT=0
-if [ -f "${HPC_RESULTS_DIR}/gpu-inventory.json" ]; then
-    GPU_COUNT_REPORT=$(jq -r '.gpu_count // (.gpus | length) // 0' "${HPC_RESULTS_DIR}/gpu-inventory.json" 2>/dev/null) || true
+if has_cmd nvidia-smi; then
+    GPU_COUNT_REPORT=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l | tr -d '[:space:]')
 fi
-if [ "${GPU_COUNT_REPORT:-0}" -eq 0 ] 2>/dev/null && has_cmd nvidia-smi; then
-    GPU_COUNT_REPORT=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
+if [ -f "${HPC_RESULTS_DIR}/gpu-inventory.json" ]; then
+    gpu_inv_count=$(jq -r '.gpu_count // (.gpus | length) // 0' "${HPC_RESULTS_DIR}/gpu-inventory.json" 2>/dev/null) || true
+    if [ "${gpu_inv_count:-0}" -gt 0 ] 2>/dev/null; then
+        GPU_COUNT_REPORT="$gpu_inv_count"
+    fi
 fi
 # Fallback: length of gpu_thermals (may be limited in some VM/driver setups)
 if [ "${GPU_COUNT_REPORT:-0}" -eq 0 ] 2>/dev/null; then

@@ -31,10 +31,19 @@ driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/
 # cuda_version field may not exist on all drivers — fall back to nvidia-smi header parse
 cuda_ver=$(nvidia-smi --query-gpu=cuda_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:cntrl:]') || true
 if [ -z "$cuda_ver" ] || echo "$cuda_ver" | grep -qi "not a valid field\|error"; then
-    cuda_ver=$(nvidia-smi 2>/dev/null | grep -i "CUDA Version" | head -1 | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p') || true
+    # Parse CUDA version from nvidia-smi banner (e.g. "CUDA Version: 13.0")
+    # Anchor to "CUDA Version:" to avoid greedy .* consuming leading digits
+    cuda_ver=$(nvidia-smi 2>/dev/null | grep -i "CUDA Version" | head -1 | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p') || true
     [ -z "$cuda_ver" ] && cuda_ver="unknown"
 fi
 [ -z "$driver_ver" ] && driver_ver="unknown"
+
+# Count GPUs from driver query (authoritative for this host/session).
+# This avoids under/over-counting when downstream parsing drops fields.
+gpu_count_detected=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l | tr -d '[:space:]')
+case "$gpu_count_detected" in
+    ''|*[!0-9]*) gpu_count_detected=0 ;;
+esac
 
 # nvcc version — check PATH then common locations
 nvcc_ver="none"
@@ -236,11 +245,12 @@ RESULT=$(jq -n \
     --slurpfile topo_arr "$TMP_TOP" \
     --argjson virt "$VIRT_INFO" \
     --arg note "$VIRT_NOTE" \
+    --argjson detected_count "$gpu_count_detected" \
     '$spec_arr[0] as $spec | $nvlink_arr[0] as $nvlink | $topo_arr[0] as $topo | {
         driver_version: $drv,
         cuda_version: $cuda,
         nvcc_version: $nvcc,
-        gpu_count: ($gpus[0] | length),
+        gpu_count: (if $detected_count > 0 then $detected_count else ($gpus[0] | length) end),
         gpus: $gpus[0],
         nvlink: $nvlink,
         topology: $topo,
@@ -250,5 +260,6 @@ RESULT=$(jq -n \
     }')
 
 echo "$RESULT" | emit_json "gpu-inventory" "ok"
-log_ok "GPU inventory: $(echo "$gpu_json" | jq length) GPUs found"
+final_gpu_count=$(echo "$RESULT" | jq -r '.gpu_count // 0' 2>/dev/null || echo 0)
+log_ok "GPU inventory: ${final_gpu_count} GPUs found"
 echo "$RESULT" | jq '{gpu_count, driver_version, cuda_version, nvlink}'

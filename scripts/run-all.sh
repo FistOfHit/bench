@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # run-all.sh — Master orchestrator for HPC bench suite
 # Runs all phases in order, handles timeouts, shows progress
-# Usage: run-all.sh [--quick]  (quick = short benchmarks to verify suite end-to-end)
+# Usage: run-all.sh [--quick] [--smoke] [--auto-install-runtime] [--fail-fast-runtime]
+#   --quick               short benchmarks to verify suite end-to-end
+#   --smoke               bootstrap + inventory + report only
+#   --auto-install-runtime  auto-install NVIDIA container runtime during runtime-sanity
+#   --fail-fast-runtime   stop immediately if runtime-sanity fails
 SCRIPT_NAME="run-all"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -20,8 +24,16 @@ while [ $# -gt 0 ]; do
             export HPC_QUICK=1
             shift
             ;;
+        --auto-install-runtime)
+            export HPC_AUTO_INSTALL_CONTAINER_RUNTIME=1
+            shift
+            ;;
+        --fail-fast-runtime)
+            export HPC_FAIL_FAST_RUNTIME=1
+            shift
+            ;;
         *)
-            log_warn "Unknown option: $1 (use --quick or --smoke)"
+            log_warn "Unknown option: $1 (use --quick, --smoke, --auto-install-runtime, --fail-fast-runtime)"
             shift
             ;;
     esac
@@ -60,6 +72,12 @@ fi
 log_info "  Host: $(hostname)"
 log_info "  Date: $(date -u)"
 log_info "  Results: ${HPC_RESULTS_DIR}"
+if [ "${HPC_AUTO_INSTALL_CONTAINER_RUNTIME:-0}" = "1" ]; then
+    log_info "  Runtime sanity auto-install: enabled"
+fi
+if [ "${HPC_FAIL_FAST_RUNTIME:-0}" = "1" ]; then
+    log_info "  Runtime fail-fast: enabled"
+fi
 log_info "================================================================"
 
 START_TIME=$(date +%s)
@@ -89,8 +107,11 @@ run_module() {
     log_info "━━━ [$TOTAL] Running: $name ━━━"
     local mod_start=$(date +%s)
 
+    # Disable errexit/pipefail so a module failure doesn't kill the orchestrator
+    set +eo pipefail
     timeout "$MAX_MODULE_TIME" bash "$script" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
     local rc=${PIPESTATUS[0]:-$?}
+    set -eo pipefail
 
     local mod_end=$(date +%s)
     local mod_duration=$((mod_end - mod_start))
@@ -148,8 +169,36 @@ else
 fi
 
 # ═══════════════════════════════════════════
+# PHASE 0.5: Runtime Sanity (early fail-fast/auto-install checks)
+# ═══════════════════════════════════════════
+log_info "╔══════════════════════════════════════╗"
+log_info "║  PHASE 0.5: Runtime Sanity           ║"
+log_info "╚══════════════════════════════════════╝"
+run_module "${SCRIPT_DIR}/runtime-sanity.sh"
+if [ "${HPC_FAIL_FAST_RUNTIME:-0}" = "1" ] && \
+   [ -f "${HPC_RESULTS_DIR}/runtime-sanity.json" ] && \
+   jq -e '.status == "error"' "${HPC_RESULTS_DIR}/runtime-sanity.json" >/dev/null 2>&1; then
+    log_error "Runtime fail-fast triggered by runtime-sanity check."
+    log_error "Resolve runtime prerequisites or rerun without --fail-fast-runtime."
+    exit 1
+fi
+
+# ═══════════════════════════════════════════
 # PHASE 1: Discovery & Inventory (parallel)
 # ═══════════════════════════════════════════
+
+# ── GPU driver warmup ──
+# After bootstrap starts nv-hostengine (DCGM daemon), it needs time to
+# initialise.  If Phase 1 modules all hit nvidia-smi in parallel while the
+# daemon is still probing the GPU, they serialise on the driver lock and
+# individual modules can appear to take 2+ minutes instead of <1s.
+# A single blocking nvidia-smi call here ensures the driver (and DCGM) are
+# ready before we fan out.
+if has_cmd nvidia-smi; then
+    log_info "Warming up GPU driver before parallel inventory..."
+    nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1 || true
+fi
+
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 1: Discovery & Inventory      ║"
 log_info "╚══════════════════════════════════════╝"
@@ -163,6 +212,7 @@ for script in "${PHASE1_SCRIPTS[@]}"; do
     echo ""
     log_info "━━━ [$TOTAL] Running: $name ━━━"
     (
+        set +eo pipefail
         mod_start=$(date +%s)
         timeout "$MAX_MODULE_TIME" bash "${SCRIPT_DIR}/${script}" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
         rc=${PIPESTATUS[0]:-$?}
@@ -173,7 +223,7 @@ for script in "${PHASE1_SCRIPTS[@]}"; do
     _phase1_names+=("$name")
 done
 for i in "${!_phase1_pids[@]}"; do
-    wait "${_phase1_pids[$i]}"
+    wait "${_phase1_pids[$i]}" 2>/dev/null || true
     name="${_phase1_names[$i]}"
     rc=0
     mod_duration=0

@@ -7,6 +7,14 @@ set -euo pipefail
 # ── Locale safety (prevent non-ASCII date formats on zh_TW etc.) ──
 export LC_TIME=C LC_NUMERIC=C LC_COLLATE=C LANG="${LANG:-C.UTF-8}"
 
+# ── CUDA PATH (ensure nvcc is discoverable after toolkit install) ──
+if [ -d /usr/local/cuda/bin ] && [[ ":$PATH:" != *":/usr/local/cuda/bin:"* ]]; then
+    export PATH="/usr/local/cuda/bin:${PATH}"
+fi
+if [ -d /usr/local/cuda/lib64 ] && [[ ":${LD_LIBRARY_PATH:-}:" != *":/usr/local/cuda/lib64:"* ]]; then
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+fi
+
 # ── Paths ──
 export HPC_BENCH_ROOT="${HPC_BENCH_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 if [ -z "${HPC_RESULTS_DIR:-}" ]; then

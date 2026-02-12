@@ -6,10 +6,12 @@ SCRIPT_NAME="bootstrap"
 # ── Parse flags (before sourcing common.sh) ──
 CHECK_ONLY=false
 INSTALL_NVIDIA=false
+INSTALL_NVIDIA_CONTAINER_TOOLKIT=false
 for arg in "$@"; do
     case "$arg" in
         --check-only) CHECK_ONLY=true ;;
         --install-nvidia) INSTALL_NVIDIA=true ;;
+        --install-nvidia-container-toolkit) INSTALL_NVIDIA_CONTAINER_TOOLKIT=true ;;
     esac
 done
 
@@ -38,6 +40,9 @@ log_info "=== HPC Bench Bootstrap ==="
 log_info "Host: $(hostname), Date: $(date -u)"
 if [ "$CHECK_ONLY" = true ]; then
     log_info "Mode: CHECK-ONLY (dry run — no installs)"
+fi
+if [ "$INSTALL_NVIDIA_CONTAINER_TOOLKIT" = true ]; then
+    log_info "Mode: install NVIDIA container toolkit (Docker + nvidia runtime)"
 fi
 
 # ── Detect OS ──
@@ -91,7 +96,7 @@ if [ "$CHECK_ONLY" = true ]; then
     done
 
     # Check key binaries
-    KEY_BINS=(python3 git cmake gcc docker nvidia-smi dcgmi ibstat ib_write_bw xhpl mpirun)
+    KEY_BINS=(python3 git cmake gcc docker nvidia-ctk nvidia-smi dcgmi ibstat ib_write_bw xhpl mpirun)
     for bin in "${KEY_BINS[@]}"; do
         if has_cmd "$bin"; then
             PRESENT+=("bin:$bin")
@@ -224,16 +229,33 @@ if [ "$INSTALL_NVIDIA" = true ]; then
                 > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
             apt-get update 2>/dev/null || true
         fi
-        if apt-get install -y nvidia-driver-580-server 2>/dev/null; then
-            log_ok "NVIDIA driver installed."
+        # Dynamically find the latest nvidia-driver-*-server package
+        _nvidia_drv_pkg=$(apt-cache search '^nvidia-driver-[0-9].*-server$' 2>/dev/null \
+            | awk '{print $1}' | sort -t- -k3,3nr | head -1)
+        if [ -z "$_nvidia_drv_pkg" ]; then
+            _nvidia_drv_pkg="nvidia-driver-580-server"  # fallback
+            log_warn "Could not detect latest driver package — falling back to $_nvidia_drv_pkg"
+        else
+            log_info "Selected driver package: $_nvidia_drv_pkg"
+        fi
+        if DEBIAN_FRONTEND=noninteractive apt-get install -y "$_nvidia_drv_pkg" 2>/dev/null; then
+            log_ok "NVIDIA driver installed ($_nvidia_drv_pkg)."
             echo ""
             echo "  Reboot required for the driver to load. After reboot, run:"
-            echo "    sudo bash scripts/bootstrap.sh --install-nvidia"
+            if [ "$INSTALL_NVIDIA_CONTAINER_TOOLKIT" = true ]; then
+                echo "    sudo bash scripts/bootstrap.sh --install-nvidia --install-nvidia-container-toolkit"
+                echo "  (this will finish CUDA/DCGM/NCCL and install Docker + NVIDIA container runtime)"
+            else
+                echo "    sudo bash scripts/bootstrap.sh --install-nvidia"
+            fi
             echo "  Then run the full suite as usual."
             echo ""
+            jq -n --arg h "$(hostname)" --arg drv "$_nvidia_drv_pkg" --arg note "NVIDIA driver installed — reboot required" \
+                '{hostname: $h, nvidia_driver_installed: true, driver_package: $drv, reboot_required: true, note: $note}' \
+                | emit_json "bootstrap" "ok"
             exit 0
         else
-            log_warn "NVIDIA driver install failed (try: apt-get install -y nvidia-driver-580-server)"
+            log_warn "NVIDIA driver install failed (tried: $_nvidia_drv_pkg)"
         fi
     else
         # --install-nvidia was requested but we didn't install the driver — explain why and optionally install CUDA toolkit
@@ -249,9 +271,16 @@ if [ "$INSTALL_NVIDIA" = true ]; then
                         > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
                     apt-get update 2>/dev/null || true
                 fi
-                if apt-get install -y cuda-toolkit-12-2 2>/dev/null || apt-get install -y cuda-toolkit-12-0 2>/dev/null; then
-                    log_ok "CUDA toolkit installed (nvcc). Add /usr/local/cuda/bin to PATH when using a GPU."
-                else
+                # Dynamically detect available CUDA toolkit version from repo
+                _cuda_installed=false
+                for _cuda_pkg in $(apt-cache search '^cuda-toolkit-[0-9]' 2>/dev/null | awk '{print $1}' | grep -E '^cuda-toolkit-[0-9]+-[0-9]+$' | sort -t- -k3,3nr -k4,4nr); do
+                    if apt-get install -y "$_cuda_pkg" 2>/dev/null; then
+                        log_ok "CUDA toolkit installed ($_cuda_pkg). Add /usr/local/cuda/bin to PATH when using a GPU."
+                        _cuda_installed=true
+                        break
+                    fi
+                done
+                if [ "$_cuda_installed" = false ]; then
                     log_warn "CUDA toolkit install failed (repo or network)."
                 fi
             fi
@@ -301,12 +330,27 @@ if [ "$HAS_GPU" = true ] && [ "$HAS_INTERNET" = true ] && ! command -v nvcc &>/d
             > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
         apt-get update 2>/dev/null || true
     fi
-    # Prefer cuda-toolkit-12-2 for broad compatibility; fallback to 12-0
-    if apt-get install -y cuda-toolkit-12-2 2>/dev/null; then
-        log_ok "CUDA toolkit installed (cuda-toolkit-12-2)"
-    elif apt-get install -y cuda-toolkit-12-0 2>/dev/null; then
-        log_ok "CUDA toolkit installed (cuda-toolkit-12-0)"
-    else
+    # Detect CUDA version from driver and try matching toolkit; fall back to latest available
+    _cuda_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+    _cuda_runtime=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -1)
+    _cuda_major=$(echo "${_cuda_runtime:-12.0}" | cut -d. -f1)
+    _cuda_minor=$(echo "${_cuda_runtime:-12.0}" | cut -d. -f2)
+    _cuda_installed=false
+    log_info "Driver CUDA runtime: ${_cuda_runtime:-unknown} — looking for matching toolkit..."
+    # Try exact major-minor match first, then major-only, then any available (newest first)
+    for _cuda_pkg in \
+        "cuda-toolkit-${_cuda_major}-${_cuda_minor}" \
+        $(apt-cache search "^cuda-toolkit-${_cuda_major}-" 2>/dev/null | awk '{print $1}' | grep -E "^cuda-toolkit-${_cuda_major}-[0-9]+$" | sort -t- -k4,4nr) \
+        $(apt-cache search '^cuda-toolkit-[0-9]' 2>/dev/null | awk '{print $1}' | grep -E '^cuda-toolkit-[0-9]+-[0-9]+$' | sort -t- -k3,3nr -k4,4nr); do
+        if [ -z "$_cuda_pkg" ]; then continue; fi
+        log_info "Trying: $_cuda_pkg ..."
+        if apt-get install -y "$_cuda_pkg" 2>/dev/null; then
+            log_ok "CUDA toolkit installed ($_cuda_pkg)"
+            _cuda_installed=true
+            break
+        fi
+    done
+    if [ "$_cuda_installed" = false ]; then
         log_warn "CUDA toolkit install failed — gpu-burn/nccl-tests may need nvcc; ensure PATH includes /usr/local/cuda/bin"
     fi
 fi
@@ -334,6 +378,71 @@ if ls /sys/class/infiniband/*/ports/*/state 2>/dev/null | head -1 | grep -q . &&
     esac
 fi
 
+# ── Optional: NVIDIA container runtime (Docker + NVIDIA toolkit) ──
+# Enables GPU container workloads such as hpl-mxp.sh.
+if [ "$INSTALL_NVIDIA_CONTAINER_TOOLKIT" = true ]; then
+    if [ "$HAS_GPU" != true ]; then
+        log_warn "Skipping NVIDIA container toolkit install: no working NVIDIA GPU/driver"
+    elif [ "$HAS_INTERNET" != true ]; then
+        log_warn "Skipping NVIDIA container toolkit install: no internet"
+    elif [ "$PKG_MGR" != "apt" ]; then
+        log_warn "Skipping NVIDIA container toolkit install: currently supported for apt only"
+    else
+        log_info "Installing Docker engine and NVIDIA container toolkit..."
+        install_ok=true
+
+        # Docker repo (official) for newer engine/runtime packages.
+        install -m 0755 -d /etc/apt/keyrings 2>/dev/null || true
+        if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg 2>/dev/null | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null || install_ok=false
+            chmod a+r /etc/apt/keyrings/docker.gpg 2>/dev/null || true
+        fi
+        if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" \
+                > /etc/apt/sources.list.d/docker.list 2>/dev/null || install_ok=false
+        fi
+        apt-get update 2>/dev/null || install_ok=false
+        if ! apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin 2>/dev/null; then
+            log_warn "Docker CE install failed, falling back to docker.io"
+            apt-get install -y docker.io 2>/dev/null || install_ok=false
+        fi
+
+        # NVIDIA container toolkit repo
+        if [ ! -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]; then
+            curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey 2>/dev/null \
+                | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null || install_ok=false
+        fi
+        if [ ! -f /etc/apt/sources.list.d/nvidia-container-toolkit.list ]; then
+            curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list 2>/dev/null \
+                | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+                > /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null || install_ok=false
+        fi
+        apt-get update 2>/dev/null || install_ok=false
+        apt-get install -y nvidia-container-toolkit nvidia-container-toolkit-base 2>/dev/null || install_ok=false
+
+        # Configure Docker runtime and restart daemon.
+        if has_cmd nvidia-ctk; then
+            nvidia-ctk runtime configure --runtime=docker >/dev/null 2>&1 || install_ok=false
+        else
+            install_ok=false
+        fi
+        if has_cmd systemctl; then
+            systemctl enable --now docker >/dev/null 2>&1 || true
+            systemctl restart docker >/dev/null 2>&1 || install_ok=false
+        else
+            service docker restart >/dev/null 2>&1 || true
+        fi
+
+        if [ "$install_ok" = true ] && has_cmd docker && docker info 2>/dev/null | grep -qi nvidia; then
+            log_ok "NVIDIA container runtime configured successfully"
+        elif [ "$install_ok" = true ]; then
+            log_warn "Docker installed but NVIDIA runtime not detected in docker info yet"
+        else
+            log_warn "NVIDIA container toolkit setup incomplete (non-fatal)"
+        fi
+    fi
+fi
+
 # ── Docker/container runtime check ──
 if has_cmd docker; then
     log_info "Docker: $(docker --version 2>/dev/null)"
@@ -352,11 +461,11 @@ fi
 if [ "$HAS_INTERNET" = true ]; then
     has_cmd git || pkg_install git 2>/dev/null || true
     has_cmd cmake || pkg_install cmake 2>/dev/null || true
-    # Optional: Boost for nvbandwidth build-from-source
+    # Optional: Boost for nvbandwidth build-from-source (needs program_options component)
     if [ "$HAS_GPU" = true ]; then
         case "$PKG_MGR" in
-            apt) pkg_install libboost-dev 2>/dev/null || log_warn "Boost install failed (nvbandwidth may skip)" ;;
-            dnf|yum) pkg_install boost-devel 2>/dev/null || log_warn "Boost install failed (nvbandwidth may skip)" ;;
+            apt) pkg_install libboost-dev libboost-program-options-dev 2>/dev/null || log_warn "Boost install failed (nvbandwidth may skip)" ;;
+            dnf|yum) pkg_install boost-devel boost-program-options 2>/dev/null || log_warn "Boost install failed (nvbandwidth may skip)" ;;
         esac
     fi
 fi
@@ -393,6 +502,7 @@ SUMMARY=$(jq -n \
     --arg gpu_model "$([ "$HAS_GPU" = true ] && echo "$GPU_MODEL" || echo "none")" \
     --argjson gpu_count "$([ "$HAS_GPU" = true ] && echo "$GPU_N" || echo 0)" \
     --argjson has_docker "$(has_cmd docker && echo true || echo false)" \
+    --argjson has_nvidia_container_runtime "$(has_cmd docker && docker info 2>/dev/null | grep -qi nvidia && echo true || echo false)" \
     --argjson has_dcgm "$(has_cmd dcgmi && echo true || echo false)" \
     --argjson has_infiniband "$(ls /sys/class/infiniband/ 2>/dev/null | head -1 | grep -q . && echo true || echo false)" \
     --argjson has_internet "$HAS_INTERNET" \
@@ -404,7 +514,7 @@ SUMMARY=$(jq -n \
         hostname: $hostname, os: $os, kernel: $kernel,
         pkg_manager: $pkg_manager, virtualization: $virtualization,
         has_gpu: $has_gpu, gpu_model: $gpu_model, gpu_count: $gpu_count,
-        has_docker: $has_docker, has_dcgm: $has_dcgm,
+        has_docker: $has_docker, has_nvidia_container_runtime: $has_nvidia_container_runtime, has_dcgm: $has_dcgm,
         has_infiniband: $has_infiniband, has_internet: $has_internet,
         has_ipmitool: $has_ipmitool, has_compiler: $has_compiler,
         results_dir: $results_dir, work_dir: $work_dir

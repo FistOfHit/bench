@@ -8,9 +8,10 @@ log_info "=== GPU Burn Stress Test ==="
 
 require_gpu "gpu-burn" "no nvidia-smi"
 
-# Quick mode (HPC_QUICK=1): 3s burn to verify suite; VMs: shorter; else 5 min default. Override with GPU_BURN_DURATION.
+# Quick mode (HPC_QUICK=1): 10s burn to verify suite (≥10s needed for GFLOPS output);
+# VMs: shorter; else 5 min default. Override with GPU_BURN_DURATION.
 if [ "${HPC_QUICK:-0}" = "1" ]; then
-    BURN_DURATION=${GPU_BURN_DURATION:-3}
+    BURN_DURATION=${GPU_BURN_DURATION:-10}
 elif is_virtualized; then
     BURN_DURATION=${GPU_BURN_DURATION:-60}
 else
@@ -92,6 +93,8 @@ errors_found=$(echo "$burn_output" | grep -c "FAULTY" 2>/dev/null || echo 0)
 gpu_results=$(echo "$burn_output" | grep -E "GPU [0-9]+.*: (OK|FAULTY)" | tail -20)
 
 # Parse GFLOPS per GPU — use POSIX-compatible awk (no named capture groups)
+# Strategy: first try per-GPU summary lines (older gpu-burn), then fall back to
+# aggregate GFLOPS from progress lines (newer gpu-burn format).
 gpu_gflops=$(echo "$burn_output" | awk '
 /GPU [0-9]+.*:/ {
     # Extract GPU index
@@ -112,8 +115,65 @@ gpu_gflops=$(echo "$burn_output" | awk '
     }
 }' | sed 's/,$//' | awk '{print "["$0"]"}')
 # When no GPU line matched, awk outputs "[]" but sed can leave "[""]" — normalize to valid JSON
-echo "$gpu_gflops" | jq . >/dev/null 2>&1 || gpu_gflops="[]"
+# Normalize: ensure gpu_gflops is valid JSON array (empty pipeline → empty string)
+if [ -z "$gpu_gflops" ] || ! echo "$gpu_gflops" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    gpu_gflops="[]"
+fi
 gpu_gflops=$(echo "$gpu_gflops" | jq -c . 2>/dev/null) || gpu_gflops="[]"
+
+# ── Fallback: extract GFLOPS from progress lines (newer gpu-burn format) ──
+# Newer gpu-burn emits progress lines like:
+#   100.0%  proc'd: 281 (36642 Gflop/s)   errors: 0   temps: 47 C
+# These have aggregate GFLOPS but no per-GPU breakdown.  Use the LAST
+# progress line's value (steady-state) and divide across detected GPUs.
+if [ "$gpu_gflops" = "[]" ]; then
+    last_progress_gflops=$(echo "$burn_output" | awk '
+        /Gflop\/s/ {
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /Gflop\/s/) {
+                    val = $(i-1)
+                    gsub(/[^0-9.]/, "", val)
+                    if (val + 0 > 0) last = val + 0
+                }
+            }
+        }
+        END { if (last + 0 > 0) printf "%d\n", last }
+    ')
+    if [ -n "$last_progress_gflops" ]; then
+        # Get GPU indices from the final summary ("GPU N: OK" / "GPU N: FAULTY")
+        _gpu_idx_list=$(echo "$burn_output" | awk '/GPU [0-9]+: (OK|FAULTY)/ { match($0, /GPU ([0-9]+)/); print substr($0, RSTART+4, RLENGTH-4)+0 }')
+        _gpu_count=$(echo "$_gpu_idx_list" | grep -c . 2>/dev/null || echo 1)
+        [ "$_gpu_count" -lt 1 ] && _gpu_count=1
+        _per_gpu=$(awk "BEGIN { printf \"%.1f\", $last_progress_gflops / $_gpu_count }")
+        # Determine per-GPU status from final summary (FAULTY vs OK)
+        _gpu_status_map=$(echo "$burn_output" | awk '/GPU [0-9]+: (OK|FAULTY)/ {
+            match($0, /GPU ([0-9]+)/); idx=substr($0, RSTART+4, RLENGTH-4)+0
+            st="ok"; if ($0 ~ /FAULTY/) st="fail"
+            print idx, st
+        }')
+        # Build JSON array
+        gpu_gflops=$(echo "$_gpu_idx_list" | awk -v gf="$_per_gpu" -v smap="$_gpu_status_map" '
+            BEGIN {
+                # Parse status map (space-separated "idx status" pairs)
+                n = split(smap, arr, "\n")
+                for (j = 1; j <= n; j++) {
+                    split(arr[j], kv, " ")
+                    if (kv[1] != "") statmap[kv[1]] = kv[2]
+                }
+                printf "["
+            }
+            NR > 1 { printf "," }
+            {
+                st = (statmap[$1] != "") ? statmap[$1] : "ok"
+                printf "{\"gpu\":%s,\"gflops\":%s,\"status\":\"%s\"}", $1, gf, st
+            }
+            END { printf "]" }
+        ')
+        echo "$gpu_gflops" | jq . >/dev/null 2>&1 || gpu_gflops="[]"
+        gpu_gflops=$(echo "$gpu_gflops" | jq -c . 2>/dev/null) || gpu_gflops="[]"
+        log_info "GFLOPS from progress lines: ${last_progress_gflops} total (${_per_gpu}/GPU x ${_gpu_count})"
+    fi
+fi
 
 # Parse temp log for max temps per GPU
 max_temps="[]"
