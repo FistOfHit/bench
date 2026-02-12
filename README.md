@@ -58,6 +58,8 @@ sudo bash scripts/run-all.sh --smoke
 sudo bash scripts/run-all.sh --quick --auto-install-runtime
 # - fail fast immediately when runtime sanity fails
 sudo bash scripts/run-all.sh --quick --fail-fast-runtime
+# - optional: in VM, force hpl-mxp to fail instead of auto-skip on VM-specific container issues
+sudo env HPC_HPL_MXP_VM_STRICT=1 bash scripts/hpl-mxp.sh
 ```
 
 **Run on a remote host (single command):**
@@ -148,6 +150,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 | `HPC_SMOKE` | *(unset)* | Set by `run-all.sh --smoke`: run only bootstrap, discovery/inventory, and report (no benchmarks); under ~1 min for “did it install and detect?” |
 | `HPC_AUTO_INSTALL_CONTAINER_RUNTIME` | `0` | Set to `1` to let `run-all.sh` auto-run `bootstrap.sh --install-nvidia-container-toolkit` during early runtime sanity if GPU is present but NVIDIA container runtime is missing (requires root + internet). |
 | `HPC_FAIL_FAST_RUNTIME` | `0` | Set to `1` to make early runtime sanity fail immediately when GPU driver is present but NVIDIA container runtime is missing. |
+| `HPC_HPL_MXP_VM_STRICT` | `0` | Set to `1` to disable VM auto-skip conversion in `hpl-mxp.sh`; VM-specific container failures (e.g., SIGPIPE/no usable output) are treated as hard errors. |
 
 ## Repository layout
 

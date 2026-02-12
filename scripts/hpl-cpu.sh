@@ -56,9 +56,19 @@ log_info "HPL timeout: ${HPL_TIMEOUT}s (dynamic based on ${total_mem_gb}GB RAM)"
 # ── Try containerized HPL first ──
 hpl_output=""
 hpl_method="none"
+hpl_skip_note="HPL not available"
+HPL_CPU_IMAGE="intel/hpckit:latest"
+CONTAINER_CMD=""
+hpl_image_ready=true
 
 if has_cmd docker && docker info &>/dev/null; then
-    log_info "Trying containerized HPL..."
+    CONTAINER_CMD="docker"
+elif has_cmd podman && podman info &>/dev/null; then
+    CONTAINER_CMD="podman"
+fi
+
+if [ -n "$CONTAINER_CMD" ]; then
+    log_info "Trying containerized HPL with $CONTAINER_CMD..."
     # Create HPL.dat
     HPL_DAT="${HPC_WORK_DIR}/HPL.dat"
     cat > "$HPL_DAT" <<HPLEOF
@@ -95,22 +105,41 @@ $Q           Qs
 8            memory alignment in double (> 0)
 HPLEOF
 
-    hpl_output=$(run_with_timeout "$HPL_TIMEOUT" "hpl-container" \
-        docker run --rm -v "${HPC_WORK_DIR}:/work" \
-        intel/hpckit:latest bash -c "cd /work && mpirun -np $NPROCS xhpl" 2>&1) && hpl_method="container" || true
+    if ! $CONTAINER_CMD images -q "$HPL_CPU_IMAGE" 2>/dev/null | grep -q .; then
+        log_info "HPL CPU image not cached; pulling $HPL_CPU_IMAGE..."
+        if ! run_with_timeout "$HPL_TIMEOUT" "hpl-cpu-image-pull" "$CONTAINER_CMD" pull "$HPL_CPU_IMAGE" >/dev/null 2>&1; then
+            hpl_skip_note="container runtime available but image pull failed ($HPL_CPU_IMAGE)"
+            hpl_image_ready=false
+        fi
+    fi
+
+    if [ "$hpl_method" = "none" ] && [ "$hpl_image_ready" = true ]; then
+        hpl_output=$(run_with_timeout "$HPL_TIMEOUT" "hpl-container" \
+            "$CONTAINER_CMD" run --rm -v "${HPC_WORK_DIR}:/work" \
+            "$HPL_CPU_IMAGE" bash -c "cd /work && mpirun -np $NPROCS xhpl" 2>&1) && hpl_method="container" || {
+                hpl_skip_note="container runtime available but HPL container run failed"
+            }
+    fi
+else
+    hpl_skip_note="no usable container runtime (docker/podman)"
 fi
 
 # ── Fallback: system HPL ──
 if [ "$hpl_method" = "none" ] && has_cmd xhpl; then
     log_info "Using system xhpl..."
     cd "$HPC_WORK_DIR"
-    hpl_output=$(run_with_timeout "$HPL_TIMEOUT" "hpl-system" mpirun -np "$NPROCS" xhpl 2>&1) && hpl_method="system" || true
+    hpl_output=$(run_with_timeout "$HPL_TIMEOUT" "hpl-system" mpirun -np "$NPROCS" xhpl 2>&1) && hpl_method="system" || {
+        hpl_skip_note="system xhpl detected but execution failed"
+    }
 fi
 
 # ── Fallback: skip ──
 if [ "$hpl_method" = "none" ]; then
-    log_warn "HPL not available (no container or xhpl binary)"
-    echo '{"note":"HPL not available"}' | emit_json "hpl-cpu" "skipped"
+    if ! has_cmd xhpl && [ "$hpl_skip_note" = "no usable container runtime (docker/podman)" ]; then
+        hpl_skip_note="no usable container runtime and xhpl binary not found"
+    fi
+    log_warn "HPL skipped: $hpl_skip_note"
+    jq -n --arg note "$hpl_skip_note" '{note: $note}' | emit_json "hpl-cpu" "skipped"
     exit 0
 fi
 

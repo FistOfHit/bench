@@ -20,17 +20,30 @@ fi
 gpu_thermal="[]"
 gpu_throttle="[]"
 if has_cmd nvidia-smi; then
-    gpu_thermal=$(nvidia-smi --query-gpu=index,name,temperature.gpu,temperature.memory,power.draw,power.limit,fan.speed \
-        --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]' | awk -F', ' '
-    BEGIN { print "[" }
-    NR>1 { printf "," }
-    {
-        gsub(/\[Not Supported\]/, "null")
-        gsub(/\[Unknown\]/, "null")
-        printf "{\"gpu\":%s,\"name\":\"%s\",\"temp_gpu_c\":%s,\"temp_mem_c\":%s,\"power_draw_w\":%s,\"power_limit_w\":%s,\"fan_pct\":%s}", $1,$2,($3=="null"?"null":$3),($4=="null"?"null":$4),($5=="null"?"null":$5),($6=="null"?"null":$6),($7=="null"?"null":"\""$7"\"")
-    }
-    END { print "]" }
-    ')
+    _gpu_rows=""
+    while IFS=',' read -r idx name t_gpu t_mem p_draw p_limit fan; do
+        idx=$(json_numeric_or_null "$idx")
+        t_gpu=$(json_numeric_or_null "$t_gpu")
+        t_mem=$(json_numeric_or_null "$t_mem")
+        p_draw=$(json_numeric_or_null "$p_draw")
+        p_limit=$(json_numeric_or_null "$p_limit")
+        fan=$(json_numeric_or_null "$fan")
+        name=$(trim_ws "$name")
+        _row=$(jq -n \
+            --argjson gpu "$idx" \
+            --arg name "$name" \
+            --argjson temp_gpu_c "$t_gpu" \
+            --argjson temp_mem_c "$t_mem" \
+            --argjson power_draw_w "$p_draw" \
+            --argjson power_limit_w "$p_limit" \
+            --argjson fan_pct "$fan" \
+            '{gpu: $gpu, name: $name, temp_gpu_c: $temp_gpu_c, temp_mem_c: $temp_mem_c, power_draw_w: $power_draw_w, power_limit_w: $power_limit_w, fan_pct: $fan_pct}')
+        _gpu_rows="${_gpu_rows}${_row}"$'\n'
+    done < <(nvidia-smi --query-gpu=index,name,temperature.gpu,temperature.memory,power.draw,power.limit,fan.speed \
+        --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]')
+    if [ -n "$_gpu_rows" ]; then
+        gpu_thermal=$(printf '%s' "$_gpu_rows" | jq -sc '.')
+    fi
 
     # ── Throttle detection ──
     gpu_throttle=$(nvidia-smi --query-gpu=index,clocks_throttle_reasons.active,clocks_throttle_reasons.gpu_idle,clocks_throttle_reasons.sw_power_cap,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown \

@@ -6,10 +6,25 @@ source "$(dirname "$0")/../lib/common.sh"
 log_info "=== HPL-MxP (GPU) Benchmark ==="
 
 require_gpu "hpl-mxp" "no GPU"
+HPL_MXP_VM_STRICT="${HPC_HPL_MXP_VM_STRICT:-0}"
+if [ "$HPL_MXP_VM_STRICT" = "1" ]; then
+    log_info "HPL-MxP VM strict mode enabled (no VM auto-skip conversion)"
+fi
+
+vm_skip_allowed() {
+    is_virtualized && [ "$HPL_MXP_VM_STRICT" != "1" ]
+}
+
+docker_has_nvidia_runtime() {
+    has_cmd docker || return 1
+    local dinfo
+    dinfo=$(docker info 2>/dev/null || true)
+    [ -n "$dinfo" ] && echo "$dinfo" | grep -qi nvidia
+}
 
 # Need container runtime with GPU support
 CONTAINER_CMD=""
-if has_cmd docker && docker info 2>/dev/null | grep -qi nvidia; then
+if docker_has_nvidia_runtime; then
     CONTAINER_CMD="docker"
 elif has_cmd nvidia-docker; then
     CONTAINER_CMD="nvidia-docker"
@@ -24,10 +39,16 @@ HPL_MXP_EXIT_CODE=
 _hpl_exit_trap() {
     local _rc=$?
     HPL_MXP_EXIT_CODE=$_rc
-    if [ $_rc -eq 141 ] && is_virtualized; then
-        log_warn "HPL-MxP exited with SIGPIPE (141) — typical in VMs, skipping"
-        echo '{"note":"HPL-MxP exited with SIGPIPE (typical in VMs)","skip_reason":"vm"}' | emit_json "hpl-mxp" "skipped"
-        HPL_MXP_EXIT_CODE=0
+    if [ $_rc -eq 141 ]; then
+        if vm_skip_allowed; then
+            log_warn "HPL-MxP exited with SIGPIPE (141) — typical in VMs, skipping"
+            echo '{"note":"HPL-MxP exited with SIGPIPE (typical in VMs)","skip_reason":"vm"}' | emit_json "hpl-mxp" "skipped"
+            HPL_MXP_EXIT_CODE=0
+        else
+            log_error "HPL-MxP exited with SIGPIPE (141) and VM strict mode is enabled"
+            echo '{"error":"HPL-MxP exited with SIGPIPE while strict VM mode is enabled"}' | emit_json "hpl-mxp" "error"
+            HPL_MXP_EXIT_CODE=1
+        fi
     fi
 }
 trap '_hpl_exit_trap; _r=${HPL_MXP_EXIT_CODE:-$?}; do_cleanup; exit $_r' EXIT
@@ -173,7 +194,7 @@ hpl_output=$(run_with_timeout "$HPL_MXP_TIMEOUT" "hpl-mxp" \
 # ── Parse ──
 # If run produced no usable output (e.g. container crash, SIGPIPE in VM), skip gracefully
 if [ -z "$hpl_output" ] || ! echo "$hpl_output" | grep -q "WR[0-9]\|PASSED"; then
-    if is_virtualized; then
+    if vm_skip_allowed; then
         log_warn "HPL-MxP produced no results (typical in VMs) — skipping"
         echo '{"note":"HPL-MxP run produced no results (container/VM limitation)","skip_reason":"vm"}' | emit_json "hpl-mxp" "skipped"
         exit 0

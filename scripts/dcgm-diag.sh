@@ -16,6 +16,9 @@ fi
 DCGM_TIMEOUT=1800
 if [ "${HPC_QUICK:-0}" = "1" ]; then
     DCGM_TIMEOUT=90
+    if is_virtualized; then
+        DCGM_TIMEOUT=120
+    fi
     log_info "Quick mode — DCGM level 1 only, timeout ${DCGM_TIMEOUT}s"
 elif is_virtualized; then
     DCGM_TIMEOUT=120
@@ -48,8 +51,8 @@ done
 
 if [ "$diag_level" -eq 0 ]; then
     if is_virtualized; then
-        log_warn "All DCGM diag levels failed (typical in VMs) — skipping"
-        echo '{"note":"all levels failed (typical in virtualized environments)","skip_reason":"vm"}' | emit_json "dcgm-diag" "skipped"
+        log_warn "All attempted DCGM levels failed in VM — skipping after attempted diagnostics"
+        echo '{"note":"all attempted DCGM levels failed in VM after diagnostics attempt","skip_reason":"vm"}' | emit_json "dcgm-diag" "skipped"
         exit 0
     fi
     log_error "All DCGM diag levels failed"

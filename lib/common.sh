@@ -91,6 +91,32 @@ sanitize_json_str() {
 # Simple JSON string escape (legacy, use sanitize_json_str for user input)
 json_str() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 
+# Trim leading/trailing whitespace.
+trim_ws() {
+    local v="${1-}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    printf '%s' "$v"
+}
+
+# Convert potentially non-numeric telemetry values to JSON-safe numbers.
+# Returns: numeric literal (int/float) or "null".
+json_numeric_or_null() {
+    local raw
+    raw=$(trim_ws "${1-}")
+    case "$raw" in
+        ""|"N/A"|"[N/A]"|"[Not Supported]"|"[Unknown]"|"unknown"|"null")
+            printf 'null'
+            return 0
+            ;;
+    esac
+    if [[ "$raw" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+        printf '%s' "$raw"
+    else
+        printf 'null'
+    fi
+}
+
 # ── Command availability ──
 has_cmd() { command -v "$1" &>/dev/null; }
 require_cmd() {

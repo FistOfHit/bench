@@ -12,6 +12,7 @@ register_cleanup "$STREAM_DIR"
 # ── Download and compile STREAM ──
 STREAM_SRC="${STREAM_DIR}/stream.c"
 STREAM_BIN="${STREAM_DIR}/stream"
+NPROCS=$(nproc)
 
 if [ ! -x "$STREAM_BIN" ]; then
     # Prefer latest from online; fallback to bundled STREAM source
@@ -29,7 +30,6 @@ if [ ! -x "$STREAM_BIN" ]; then
 
     # Compile with optimization
     # Quick mode: small array and few iterations; full: ~4x L3 or 80M elements
-    NPROCS=$(nproc)
     if [ "${HPC_QUICK:-0}" = "1" ]; then
         ARRAY_SIZE=1000000
         NTIMES=3

@@ -50,6 +50,13 @@ All notable changes to the HPC Bench Suite are documented here. Version number i
     - New bootstrap flag docs for NVIDIA container toolkit setup.
     - Combined bootstrap workflow docs (driver + runtime).
     - New `run-all` runtime controls and environment variables documented.
+15. **lib/common.sh + scripts/thermal-power.sh** — Added reusable numeric sanitization helpers (`trim_ws`, `json_numeric_or_null`) and refactored thermal GPU parser to use them, preventing `jq --argjson` crashes on values like `N/A`/`[Not Supported]`.
+16. **scripts/dcgm-diag.sh** — Quick mode on VMs now keeps the VM timeout behavior (120s) while still running r1 only; VM skip note now states diagnostics were attempted before skip.
+17. **scripts/hpl-cpu.sh** — Container-first reliability improvements:
+    - Detects usable container runtime as Docker first, Podman fallback.
+    - Pre-pulls `intel/hpckit:latest` when missing.
+    - Emits specific skip notes (runtime missing, image pull failure, run failure, system xhpl failure).
+18. **scripts/hpl-mxp.sh** — Added opt-in strict VM mode via `HPC_HPL_MXP_VM_STRICT=1`; default remains VM-safe auto-skip behavior, strict mode converts VM-specific auto-skips into hard failures.
 
 **Validation notes (V1.9):**
 - Repeated end-to-end `--quick` runs validated on remote Ubuntu 24.04 KVM host with H100 GPUs.
