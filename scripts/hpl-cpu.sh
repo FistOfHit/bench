@@ -48,10 +48,12 @@ log_info "HPL params: N=$N, NB=$NB, P=$P, Q=$Q, procs=$NPROCS, RAM=${total_mem_g
 # Quick mode: 30s timeout so we skip fast if container not cached / not available; full: base 1800s + 2s per GB of RAM
 if [ "${HPC_QUICK:-0}" = "1" ]; then
     HPL_TIMEOUT=30
+    HPL_PULL_TIMEOUT=180
 else
     HPL_TIMEOUT=$((1800 + total_mem_gb * 2))
+    HPL_PULL_TIMEOUT=600
 fi
-log_info "HPL timeout: ${HPL_TIMEOUT}s (dynamic based on ${total_mem_gb}GB RAM)"
+log_info "HPL timeout: ${HPL_TIMEOUT}s (dynamic based on ${total_mem_gb}GB RAM), pull timeout: ${HPL_PULL_TIMEOUT}s"
 
 # ── Try containerized HPL first ──
 hpl_output=""
@@ -107,7 +109,7 @@ HPLEOF
 
     if ! $CONTAINER_CMD images -q "$HPL_CPU_IMAGE" 2>/dev/null | grep -q .; then
         log_info "HPL CPU image not cached; pulling $HPL_CPU_IMAGE..."
-        if ! run_with_timeout "$HPL_TIMEOUT" "hpl-cpu-image-pull" "$CONTAINER_CMD" pull "$HPL_CPU_IMAGE" >/dev/null 2>&1; then
+        if ! run_with_timeout "$HPL_PULL_TIMEOUT" "hpl-cpu-image-pull" "$CONTAINER_CMD" pull "$HPL_CPU_IMAGE" >/dev/null 2>&1; then
             hpl_skip_note="container runtime available but image pull failed ($HPL_CPU_IMAGE)"
             hpl_image_ready=false
         fi
@@ -118,19 +120,48 @@ HPLEOF
             "$CONTAINER_CMD" run --rm -v "${HPC_WORK_DIR}:/work" \
             "$HPL_CPU_IMAGE" bash -c "cd /work && mpirun -np $NPROCS xhpl" 2>&1) && hpl_method="container" || {
                 hpl_skip_note="container runtime available but HPL container run failed"
+                if echo "$hpl_output" | grep -qi "xhpl: not found"; then
+                    hpl_skip_note="container image does not include xhpl binary ($HPL_CPU_IMAGE)"
+                fi
             }
     fi
 else
     hpl_skip_note="no usable container runtime (docker/podman)"
 fi
 
-# ── Fallback: system HPL ──
+# ── Fallback: system xhpl if available ──
 if [ "$hpl_method" = "none" ] && has_cmd xhpl; then
-    log_info "Using system xhpl..."
-    cd "$HPC_WORK_DIR"
-    hpl_output=$(run_with_timeout "$HPL_TIMEOUT" "hpl-system" mpirun -np "$NPROCS" xhpl 2>&1) && hpl_method="system" || {
-        hpl_skip_note="system xhpl detected but execution failed"
-    }
+    if ! has_cmd mpirun && [ "$(id -u)" -eq 0 ] && has_cmd apt-get; then
+        log_info "mpirun missing — attempting install: openmpi-bin"
+        run_with_timeout 300 "install-openmpi" apt-get install -y openmpi-bin >/dev/null 2>&1 || true
+    fi
+    if has_cmd mpirun; then
+        log_info "Using system xhpl..."
+        cd "$HPC_WORK_DIR"
+        hpl_output=$(run_with_timeout "$HPL_TIMEOUT" "hpl-system" mpirun --allow-run-as-root -np "$NPROCS" xhpl 2>&1) && hpl_method="system" || {
+            hpl_skip_note="system xhpl detected but execution failed"
+        }
+    else
+        hpl_skip_note="system xhpl found but mpirun is unavailable"
+    fi
+fi
+
+# ── Fallback: hpcc package (CPU-only path) ──
+if [ "$hpl_method" = "none" ]; then
+    if ! has_cmd hpcc && [ "$(id -u)" -eq 0 ] && has_cmd apt-get; then
+        log_info "hpcc missing — attempting install: hpcc"
+        run_with_timeout 300 "install-hpcc" apt-get install -y hpcc >/dev/null 2>&1 || true
+    fi
+    if has_cmd hpcc; then
+        hpcc_dir="${HPC_WORK_DIR}/hpcc-run"
+        mkdir -p "$hpcc_dir"
+        if [ -f /usr/share/doc/hpcc/examples/_hpccinf.txt ]; then
+            cp /usr/share/doc/hpcc/examples/_hpccinf.txt "$hpcc_dir/hpccinf.txt"
+        fi
+        hpl_output=$(run_with_timeout "$HPL_TIMEOUT" "hpl-hpcc" bash -lc "cd \"$hpcc_dir\" && mpirun --allow-run-as-root -np 4 hpcc >/dev/null 2>&1 && cat hpccoutf.txt" 2>&1) && hpl_method="hpcc" || {
+            hpl_skip_note="hpcc fallback execution failed"
+        }
+    fi
 fi
 
 # ── Fallback: skip ──
@@ -138,9 +169,11 @@ if [ "$hpl_method" = "none" ]; then
     if ! has_cmd xhpl && [ "$hpl_skip_note" = "no usable container runtime (docker/podman)" ]; then
         hpl_skip_note="no usable container runtime and xhpl binary not found"
     fi
-    log_warn "HPL skipped: $hpl_skip_note"
-    jq -n --arg note "$hpl_skip_note" '{note: $note}' | emit_json "hpl-cpu" "skipped"
-    exit 0
+    hpl_err_detail=$(printf '%s' "${hpl_output:-}" | awk 'NF{print; exit}' | tr -d '[:cntrl:]')
+    log_error "HPL unavailable: $hpl_skip_note"
+    jq -n --arg error "$hpl_skip_note" --arg detail "$hpl_err_detail" \
+        '{error: $error, detail: (if $detail != "" then $detail else null end)}' | emit_json "hpl-cpu" "error"
+    exit 1
 fi
 
 # ── Parse results ──

@@ -8,7 +8,6 @@ source "$(dirname "$0")/../lib/report-common.sh"
 log_info "=== Report Generation ==="
 
 REPORT_FILE="${HPC_RESULTS_DIR}/report.md"
-SPECS_FILE="${HPC_SPECS_FILE}"
 HPC_BENCH_VERSION="${HPC_BENCH_VERSION:-$(cat "${HPC_BENCH_ROOT}/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")}"
 
 HOSTNAME=$(jf "${HPC_RESULTS_DIR}/bootstrap.json" '.hostname' "$(hostname)")
@@ -19,13 +18,18 @@ run_report_scoring
 
 GPU_MODEL="none"
 GPU_COUNT=0
-GPU_SPEC="{}"
+GPU_ARCH="N/A"
+GPU_MEM_GB="N/A"
+GPU_TDP_W="N/A"
 if has_result "gpu-inventory"; then
     GPU_MODEL=$(jf "${HPC_RESULTS_DIR}/gpu-inventory.json" '.gpu_model // .gpus[0].name' 'none')
     GPU_COUNT=$(jf "${HPC_RESULTS_DIR}/gpu-inventory.json" '.gpu_count // (.gpus | length)' '0')
-    if [ -f "$SPECS_FILE" ] && [ "$GPU_MODEL" != "none" ]; then
-        GPU_SPEC=$(lookup_gpu_spec "$GPU_MODEL")
+    GPU_ARCH=$(jf "${HPC_RESULTS_DIR}/gpu-inventory.json" '.gpus[0].compute_capability // "N/A"' 'N/A')
+    _gpu_mem_mb=$(jf "${HPC_RESULTS_DIR}/gpu-inventory.json" '.gpus[0].memory_total_mb // empty' '')
+    if [ -n "$_gpu_mem_mb" ] && [ "$_gpu_mem_mb" != "N/A" ]; then
+        GPU_MEM_GB=$(echo "scale=1; $_gpu_mem_mb / 1024" | bc 2>/dev/null || echo "N/A")
     fi
+    GPU_TDP_W=$(jf "${HPC_RESULTS_DIR}/gpu-inventory.json" '.gpus[0].power_limit_w // "N/A"' 'N/A')
 fi
 # Single source: fallback to bootstrap if gpu-inventory missing (e.g. smoke run)
 if [ "${GPU_COUNT:-0}" = "0" ] && has_result "bootstrap"; then
@@ -145,14 +149,9 @@ if has_result "gpu-inventory" && [ "$GPU_MODEL" != "none" ]; then
     echo ""
     echo "- **Model:** ${GPU_MODEL}"
     echo "- **Count:** ${GPU_COUNT}"
-    if [ "$GPU_SPEC" != "{}" ]; then
-        spec_mem=$(echo "$GPU_SPEC" | jq -r '.memory_gb // "N/A"')
-        spec_arch=$(echo "$GPU_SPEC" | jq -r '.architecture // "N/A"')
-        spec_tdp=$(echo "$GPU_SPEC" | jq -r '.tdp_watts // "N/A"')
-        echo "- **Architecture:** ${spec_arch}"
-        echo "- **Memory per GPU:** ${spec_mem} GB"
-        echo "- **TDP:** ${spec_tdp} W"
-    fi
+    echo "- **Compute capability:** ${GPU_ARCH}"
+    echo "- **Memory per GPU:** ${GPU_MEM_GB} GB"
+    echo "- **Power limit:** ${GPU_TDP_W} W"
     echo ""
 fi
 
@@ -224,7 +223,7 @@ if has_result "stream-bench"; then
 fi
 
 # HPL CPU
-if has_result "hpl-cpu" && [ "$(mod_status hpl-cpu)" != "skipped" ]; then
+if has_result "hpl-cpu" && [ "$(mod_status hpl-cpu)" = "ok" ]; then
     echo "### HPL (CPU Linpack)"
     echo ""
     gflops=$(jf "${HPC_RESULTS_DIR}/hpl-cpu.json" '.gflops' '0')
@@ -240,25 +239,8 @@ if has_result "hpl-cpu" && [ "$(mod_status hpl-cpu)" != "skipped" ]; then
     echo ""
 fi
 
-# HPL MxP Efficiency (extract from JSON if available)
-if has_result "hpl-mxp" && [ "$(mod_status hpl-mxp)" != "skipped" ]; then
-    hpl_eff=$(jf "${HPC_RESULTS_DIR}/hpl-mxp.json" '.efficiency_pct' 'N/A')
-    if [ "$hpl_eff" != "N/A" ] && [ "$hpl_eff" != "null" ]; then
-        echo "### HPL Efficiency"
-        echo ""
-        echo "| Metric | Value |"
-        echo "|--------|-------|"
-        hpl_gflops=$(jf "${HPC_RESULTS_DIR}/hpl-mxp.json" '.gflops' '0')
-        hpl_theo=$(jf "${HPC_RESULTS_DIR}/hpl-mxp.json" '.theoretical_fp64_tflops' '0')
-        echo "| HPL-MxP Performance | ${hpl_gflops} GFLOPS |"
-        echo "| Theoretical FP64 | ${hpl_theo} TFLOPS |"
-        echo "| **HPL Efficiency** | **${hpl_eff}%** |"
-        echo ""
-    fi
-fi
-
 # HPL MxP (GPU)
-if has_result "hpl-mxp" && [ "$(mod_status hpl-mxp)" != "skipped" ]; then
+if has_result "hpl-mxp" && [ "$(mod_status hpl-mxp)" = "ok" ]; then
     echo "### HPL-MxP (GPU Linpack)"
     echo ""
     gflops=$(jf "${HPC_RESULTS_DIR}/hpl-mxp.json" '.gflops // .tflops' '0')
@@ -287,7 +269,7 @@ if has_result "gpu-burn" && [ "$(mod_status gpu-burn)" != "skipped" ]; then
 fi
 
 # DCGM Diagnostics
-if has_result "dcgm-diag" && [ "$(mod_status dcgm-diag)" != "skipped" ]; then
+if has_result "dcgm-diag" && [ "$(mod_status dcgm-diag)" = "ok" ]; then
     echo "### DCGM Diagnostics"
     echo ""
     dcgm_overall=$(jf "${HPC_RESULTS_DIR}/dcgm-diag.json" '.overall' 'N/A')
@@ -298,28 +280,26 @@ if has_result "dcgm-diag" && [ "$(mod_status dcgm-diag)" != "skipped" ]; then
 fi
 
 # NCCL Tests
-if has_result "nccl-tests" && [ "$(mod_status nccl-tests)" != "skipped" ]; then
+if has_result "nccl-tests" && [ "$(mod_status nccl-tests)" = "ok" ]; then
     echo "### NCCL Tests (GPU-GPU Communication)"
     echo ""
     nccl_gpu_count=$(jf "${HPC_RESULTS_DIR}/nccl-tests.json" '.gpu_count' 'N/A')
     allreduce_bw=$(jf "${HPC_RESULTS_DIR}/nccl-tests.json" '.peak_allreduce_busbw_gbps' 'N/A')
-    nccl_eff=$(jf "${HPC_RESULTS_DIR}/nccl-tests.json" '.efficiency_pct' 'N/A')
-    nccl_theo=$(jf "${HPC_RESULTS_DIR}/nccl-tests.json" '.theoretical_nvlink_bw_gbps' 'N/A')
+    nccl_errs=$(jf "${HPC_RESULTS_DIR}/nccl-tests.json" '.runtime_error_count // 0' '0')
     echo "| Metric | Value |"
     echo "|--------|-------|"
     echo "| GPUs | ${nccl_gpu_count} |"
     echo "| **AllReduce Peak Bus BW** | **${allreduce_bw} GB/s** |"
-    echo "| Theoretical NVLink BW | ${nccl_theo} GB/s |"
-    echo "| Efficiency | ${nccl_eff}% |"
+    echo "| Runtime errors | ${nccl_errs} |"
     echo ""
     # Per-test summary
-    jq -r '.tests[]? | "- **\(.test):** busbw=\(.summary.busbw_gbps // "N/A") GB/s, algbw=\(.summary.algbw_gbps // "N/A") GB/s"' \
+    jq -r '.tests[]? | "- **\(.test):** busbw=\(.summary.busbw_gbps // "N/A") GB/s, algbw=\(.summary.algbw_gbps // "N/A") GB/s\((if .error then ", error=" + .error else "" end))"' \
         "${HPC_RESULTS_DIR}/nccl-tests.json" 2>/dev/null || true
     echo ""
 fi
 
 # NVBandwidth
-if has_result "nvbandwidth" && [ "$(mod_status nvbandwidth)" != "skipped" ]; then
+if has_result "nvbandwidth" && [ "$(mod_status nvbandwidth)" = "ok" ]; then
     echo "### NVBandwidth (GPU Memory/PCIe/NVLink)"
     echo ""
     NVB="${HPC_RESULTS_DIR}/nvbandwidth.json"
@@ -330,14 +310,8 @@ if has_result "nvbandwidth" && [ "$(mod_status nvbandwidth)" != "skipped" ]; the
     echo "| Device → Device (read) | $(report_nvb_bw "$NVB" device_to_device_read) |"
     echo "| Device → Device (write) | $(report_nvb_bw "$NVB" device_to_device_write) |"
     echo "| Device ↔ Device (bidir) | $(report_nvb_bw "$NVB" device_to_device_bidirectional) |"
+    echo "| GPU P2P status | $(jf "$NVB" '.p2p_status' 'unknown') |"
     echo ""
-    # Theoretical comparison
-    nvb_pcie=$(jf "$NVB" '.theoretical.pcie_bandwidth_gbps' '0')
-    nvb_mem=$(jf "$NVB" '.theoretical.memory_bandwidth_gbps' '0')
-    if [ "$nvb_pcie" != "0" ] || [ "$nvb_mem" != "0" ]; then
-        echo "**Theoretical:** PCIe ${nvb_pcie} GB/s, Memory ${nvb_mem} GB/s"
-        echo ""
-    fi
 fi
 
 # Storage
@@ -398,59 +372,6 @@ if has_result "ib-tests" && [ "$(mod_status ib-tests)" != "skipped" ]; then
     echo "> health only. They do **NOT** test switch fabric, cabling, or multi-node connectivity."
     echo "> Run inter-node perftest for full fabric validation."
     echo ""
-fi
-
-echo "---"
-echo ""
-
-# ── Performance Analysis ──
-cat <<'PERF_HDR'
-## Performance Analysis
-
-PERF_HDR
-
-echo "Comparison against expected values from hardware specifications."
-echo ""
-
-# GPU memory bandwidth analysis
-if has_result "nvbandwidth" && [ "$GPU_SPEC" != "{}" ]; then
-    spec_membw=$(echo "$GPU_SPEC" | jq -r '.memory_bandwidth_gbps // empty' 2>/dev/null)
-    if [ -n "$spec_membw" ]; then
-        target=$(jq -r '.memory_bandwidth_efficiency_target // 0.85' "$SPECS_FILE" 2>/dev/null)
-        expected=$(echo "$spec_membw * $target" | bc 2>/dev/null || echo "N/A")
-        echo "### GPU Memory Bandwidth"
-        echo "- **Spec:** ${spec_membw} GB/s"
-        echo "- **Target (${target}x):** ${expected} GB/s"
-        echo ""
-    fi
-fi
-
-# NCCL vs NVLink spec
-if has_result "nccl-tests" && [ "$GPU_SPEC" != "{}" ]; then
-    spec_nvlink=$(echo "$GPU_SPEC" | jq -r '.nvlink_bandwidth_gbps // empty' 2>/dev/null)
-    if [ -n "$spec_nvlink" ] && [ "$spec_nvlink" != "0" ]; then
-        nccl_target=$(jq -r '.nccl_busbw_efficiency_target // 0.80' "$SPECS_FILE" 2>/dev/null)
-        expected_nccl=$(echo "$spec_nvlink * $nccl_target" | bc 2>/dev/null || echo "N/A")
-        echo "### NCCL / NVLink"
-        echo "- **NVLink spec:** ${spec_nvlink} GB/s"
-        echo "- **NCCL target (${nccl_target}x):** ${expected_nccl} GB/s"
-        echo ""
-    fi
-fi
-
-# IB efficiency
-if has_result "ib-tests" && [ "$(mod_status ib-tests)" != "skipped" ]; then
-    ib_theo_val=$(jf "${HPC_RESULTS_DIR}/ib-tests.json" '.theoretical_rate_gbps' '0')
-    ib_write_val=$(jf "${HPC_RESULTS_DIR}/ib-tests.json" '.ib_write_bw.peak_gbps' '0')
-    if [ "$ib_theo_val" != "0" ] && [ "$ib_write_val" != "0" ]; then
-        ib_eff=$(echo "scale=1; $ib_write_val / $ib_theo_val * 100" | bc 2>/dev/null || echo "N/A")
-        echo "### InfiniBand Efficiency"
-        echo "- **Theoretical:** ${ib_theo_val} Gb/s"
-        echo "- **Measured write BW:** ${ib_write_val} Gb/s"
-        echo "- **Efficiency:** ${ib_eff}%"
-        echo "- *(Loopback only — real fabric testing needed)*"
-        echo ""
-    fi
 fi
 
 echo "---"

@@ -207,16 +207,6 @@ gflops=$(echo "$hpl_output" | awk '/WR[0-9]/ {print $NF}' | tail -1)
 hpl_time=$(echo "$hpl_output" | awk '/WR[0-9]/ {print $(NF-1)}' | tail -1)
 passed=$(echo "$hpl_output" | grep -ci "PASSED" || echo 0)
 
-# Theoretical peak: sum of GPU FP64 TFLOPS (or FP16 for MxP)
-spec=$(lookup_gpu_spec "$GPU_MODEL")
-fp64_per_gpu=$(echo "$spec" | jq '.fp64_tflops // 0' 2>/dev/null)
-theoretical_tflops=$(echo "scale=2; $fp64_per_gpu * $NGPUS" | bc 2>/dev/null || echo "0")
-
-efficiency="N/A"
-if [ -n "$gflops" ] && [ "$theoretical_tflops" != "0" ]; then
-    efficiency=$(echo "scale=1; $gflops / ($theoretical_tflops * 1000) * 100" | bc 2>/dev/null || echo "N/A")
-fi
-
 RESULT=$(jq -n \
     --arg n "$N" \
     --arg nb "$NB" \
@@ -225,8 +215,6 @@ RESULT=$(jq -n \
     --arg gflops "${gflops:-0}" \
     --arg time "${hpl_time:-0}" \
     --arg passed "$passed" \
-    --arg theo "$theoretical_tflops" \
-    --arg eff "$efficiency" \
     --arg image "$HPL_IMAGE" \
     '{
         container_image: $image,
@@ -236,9 +224,7 @@ RESULT=$(jq -n \
         block_size_NB: ($nb | tonumber),
         gflops: ($gflops | tonumber? // 0),
         time_seconds: ($time | tonumber? // 0),
-        passed: ($passed | tonumber > 0),
-        theoretical_fp64_tflops: ($theo | tonumber? // 0),
-        efficiency_pct: $eff
+        passed: ($passed | tonumber > 0)
     }')
 
 echo "$RESULT" | emit_json "hpl-mxp" "ok"

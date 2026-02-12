@@ -81,6 +81,17 @@ declare -A test_results
 # Quick mode: shorter timeout per test
 NVB_TIMEOUT=${HPC_QUICK:+60}
 NVB_TIMEOUT=${NVB_TIMEOUT:-300}
+P2P_STATUS="unknown"
+if has_cmd nvidia-smi; then
+    p2p_out=$(nvidia-smi topo -p2p r 2>/dev/null || true)
+    if [ -n "$p2p_out" ]; then
+        if echo "$p2p_out" | grep -q "NS"; then
+            P2P_STATUS="not_supported"
+        elif echo "$p2p_out" | grep -q "OK"; then
+            P2P_STATUS="supported"
+        fi
+    fi
+fi
 
 run_nvb_test() {
     local test_name="$1"
@@ -155,12 +166,6 @@ d2d_write=$(run_nvb_test "device_to_device_memcpy_write_ce" 2>/dev/null || echo 
 # Also try bidirectional if available
 d2d_bidir=$(run_nvb_test "device_to_device_bidirectional_memcpy_read_ce" 2>/dev/null || echo '{}')
 
-# ── Expected values from specs ──
-gpu_model_name=$(gpu_model)
-spec=$(lookup_gpu_spec "$gpu_model_name")
-pcie_bw=$(echo "$spec" | jq '.pcie_bandwidth_gbps // 0' 2>/dev/null)
-mem_bw=$(echo "$spec" | jq '.memory_bandwidth_gbps // 0' 2>/dev/null)
-
 # Validate JSON before passing to --argjson (avoid crash on empty/invalid output)
 for _var in h2d d2h d2d d2d_write d2d_bidir; do
     eval "_val=\$$_var"
@@ -168,28 +173,20 @@ for _var in h2d d2h d2d d2d_write d2d_bidir; do
         eval "$_var='{}'"
     fi
 done
-# Ensure spec values have sensible defaults
-pcie_bw="${pcie_bw:-0}"
-mem_bw="${mem_bw:-0}"
-
 RESULT=$(jq -n \
     --argjson h2d "$h2d" \
     --argjson d2h "$d2h" \
     --argjson d2d "$d2d" \
     --argjson d2d_w "$d2d_write" \
     --argjson bidir "$d2d_bidir" \
-    --arg pcie_theo "$pcie_bw" \
-    --arg mem_theo "$mem_bw" \
+    --arg p2p "$P2P_STATUS" \
     '{
         host_to_device: $h2d,
         device_to_host: $d2h,
         device_to_device_read: $d2d,
         device_to_device_write: $d2d_w,
         device_to_device_bidirectional: $bidir,
-        theoretical: {
-            pcie_bandwidth_gbps: ($pcie_theo | tonumber? // 0),
-            memory_bandwidth_gbps: ($mem_theo | tonumber? // 0)
-        }
+        p2p_status: $p2p
     }')
 
 echo "$RESULT" | emit_json "nvbandwidth" "ok"

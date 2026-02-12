@@ -57,6 +57,19 @@ All notable changes to the HPC Bench Suite are documented here. Version number i
     - Pre-pulls `intel/hpckit:latest` when missing.
     - Emits specific skip notes (runtime missing, image pull failure, run failure, system xhpl failure).
 18. **scripts/hpl-mxp.sh** — Added opt-in strict VM mode via `HPC_HPL_MXP_VM_STRICT=1`; default remains VM-safe auto-skip behavior, strict mode converts VM-specific auto-skips into hard failures.
+19. **Spec DB removed from runtime/report path**:
+    - Removed GPU spec lookup usage from `gpu-inventory.sh`, `report.sh`, `nccl-tests.sh`, `nvbandwidth.sh`, and `hpl-mxp.sh`.
+    - Deleted `specs/hardware-specs.json`; report now uses runtime-measured fields only.
+20. **scripts/hpl-cpu.sh** — Better remediation before failure:
+    - Longer dedicated image pull timeout (`HPL_PULL_TIMEOUT`) to avoid quick-mode false skips.
+    - Detects missing `xhpl` in container output and falls back to host CPU paths.
+    - Adds CPU fallback via `hpcc` package and parses HPL numbers from `hpccoutf.txt`.
+    - Reports hard error with concise detail when no CPU HPL path is viable.
+21. **scripts/nccl-tests.sh** — Runtime-error handling and retries:
+    - Retries with `NCCL_P2P_DISABLE=1` + `NCCL_IB_DISABLE=1`.
+    - Additional fallback retry with 2 GPUs when >2 GPU run fails.
+    - Emits `runtime_error_count`; returns module error (non-zero) if NCCL still fails.
+22. **scripts/nvbandwidth.sh** — Adds explicit `p2p_status` (`supported`/`not_supported`/`unknown`) so D2D `N/A` is explained by topology constraints.
 
 **Validation notes (V1.9):**
 - Repeated end-to-end `--quick` runs validated on remote Ubuntu 24.04 KVM host with H100 GPUs.

@@ -185,8 +185,6 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 │   ├── filesystem-diag.sh
 │   ├── thermal-power.sh
 │   └── security-scan.sh
-├── specs/
-│   └── hardware-specs.json   # GPU/PCIe/NVLink reference specs
 └── src/                  # Bundled benchmark sources
     ├── stream.c          # STREAM memory benchmark
     ├── gpu-burn/         # GPU burn-in (CUDA)

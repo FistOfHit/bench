@@ -35,15 +35,15 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
         CUDA_HOME=$(dirname $(dirname $(which nvcc 2>/dev/null))) 2>/dev/null || true
     fi
 
-    # Prefer latest from online; fallback to bundled source in src/nccl-tests/
+    # Prefer bundled source for repeatability; fallback to online clone.
     BUNDLED_NCCL="${HPC_BENCH_ROOT}/src/nccl-tests"
     rm -rf "$NCCL_DIR"
-    if git clone https://github.com/NVIDIA/nccl-tests.git "$NCCL_DIR" 2>/dev/null; then
-        log_info "Using nccl-tests from upstream (git clone)"
-    elif [ -f "${BUNDLED_NCCL}/Makefile" ]; then
-        log_info "Using bundled nccl-tests source (online clone failed or offline)"
+    if [ -f "${BUNDLED_NCCL}/Makefile" ]; then
+        log_info "Using bundled nccl-tests source"
         rm -rf "$NCCL_DIR"
         cp -r "$BUNDLED_NCCL" "$NCCL_DIR"
+    elif git clone https://github.com/NVIDIA/nccl-tests.git "$NCCL_DIR" 2>/dev/null; then
+        log_info "Using nccl-tests from upstream (git clone)"
     else
         log_error "Failed to clone nccl-tests and no bundled source available"
         echo '{"error":"source unavailable"}' | emit_json "nccl-tests" "error"
@@ -52,11 +52,8 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
 
     cd "$NCCL_DIR"
 
-    # Find MPI if available
-    MPI_FLAG=""
-    if has_cmd mpirun && [ -d /usr/lib/x86_64-linux-gnu/openmpi ]; then
-        MPI_FLAG="MPI=1 MPI_HOME=/usr"
-    fi
+    # Build without MPI dependency; tests are launched as single process with -g <num_gpus>.
+    MPI_FLAG="MPI=0"
 
     if ! make -j$(nproc) CUDA_HOME="$CUDA_HOME" $MPI_FLAG 2>&1 | tail -10; then
         log_error "Failed to build nccl-tests"
@@ -91,6 +88,7 @@ declare -A RESULTS
 run_nccl_test() {
     local test_name="$1"
     local binary="${NCCL_BUILD}/${test_name}"
+    local run_gpus="$NGPUS"
 
     if [ ! -x "$binary" ]; then
         log_warn "Binary not found: $binary"
@@ -99,8 +97,24 @@ run_nccl_test() {
 
     log_info "Running $test_name with $NGPUS GPUs..."
     local output
-    output=$(run_with_timeout "${NCCL_TIMEOUT:-600}" "$test_name" \
+    local run_desc="$test_name"
+    output=$(run_with_timeout "${NCCL_TIMEOUT:-600}" "$run_desc" \
         "$binary" -b "$MIN_BYTES" -e "$MAX_BYTES" -f "$STEP_FACTOR" -g "$NGPUS" -n "${NCCL_ITERS:-20}" -w "${NCCL_WARMUP:-5}" 2>&1) || true
+
+    # VM/GPU passthrough environments often fail unless P2P is disabled.
+    if echo "$output" | grep -qiE "unhandled cuda error|Test NCCL failure|NCCL failure"; then
+        log_warn "$test_name failed in default mode, retrying with NCCL_P2P_DISABLE=1"
+        output=$(run_with_timeout "${NCCL_TIMEOUT:-600}" "${run_desc}-p2p-disabled" \
+            env NCCL_P2P_DISABLE=1 NCCL_P2P_LEVEL=LOC NCCL_IB_DISABLE=1 \
+            "$binary" -b "$MIN_BYTES" -e "$MAX_BYTES" -f "$STEP_FACTOR" -g "$NGPUS" -n "${NCCL_ITERS:-20}" -w "${NCCL_WARMUP:-5}" 2>&1) || true
+    fi
+    if echo "$output" | grep -qiE "unhandled cuda error|Test NCCL failure|NCCL failure" && [ "$NGPUS" -gt 2 ]; then
+        log_warn "$test_name still failing, retrying with 2 GPUs and P2P disabled"
+        run_gpus=2
+        output=$(run_with_timeout "${NCCL_TIMEOUT:-600}" "${run_desc}-2gpu" \
+            env NCCL_P2P_DISABLE=1 NCCL_P2P_LEVEL=LOC NCCL_IB_DISABLE=1 \
+            "$binary" -b "$MIN_BYTES" -e "$MAX_BYTES" -f "$STEP_FACTOR" -g "$run_gpus" -n "${NCCL_ITERS:-20}" -w "${NCCL_WARMUP:-5}" 2>&1) || true
+    fi
 
     # Parse: extract the row with max message size for bus bandwidth
     # Bundled format (7 cols): size  count  type  time(us)  algbw  busbw  error
@@ -135,7 +149,15 @@ run_nccl_test() {
     }
     END { print "]" }')
 
-    echo "{\"test\":\"$test_name\",\"gpus\":$NGPUS,\"summary\":$parsed,\"datapoints\":$datapoints}"
+    local error_line
+    error_line=$(echo "$output" | awk '/unhandled cuda error|NCCL failure|Test NCCL failure/ {print; exit}')
+    error_line=$(printf '%s' "$error_line" | tr -d '[:cntrl:]')
+    if [ -n "$error_line" ]; then
+        jq -n --arg test "$test_name" --argjson g "$run_gpus" --argjson summary "$parsed" --argjson datapoints "$datapoints" --arg err "$error_line" \
+            '{test: $test, gpus: $g, summary: $summary, datapoints: $datapoints, error: $err}'
+    else
+        echo "{\"test\":\"$test_name\",\"gpus\":$run_gpus,\"summary\":$parsed,\"datapoints\":$datapoints}"
+    fi
 }
 
 # Run the main NCCL collectives (quick mode: one test only)
@@ -157,41 +179,40 @@ for test in $NCCL_TEST_LIST; do
 done
 tests_output+="]"
 
-# ── Compute efficiency ──
-gpu_model_name=$(gpu_model)
-spec=$(lookup_gpu_spec "$gpu_model_name")
-nvlink_bw=$(echo "$spec" | jq '.nvlink_bandwidth_gbps // 0' 2>/dev/null)
-theoretical_busbw=$(echo "scale=2; $nvlink_bw * 0.85" | bc 2>/dev/null || echo "0")  # 85% efficiency target
-
 # Get peak all_reduce busbw (prefer busbw_gbps, fallback to avg_busbw_gbps when binary fails after printing avg)
 peak_busbw=$(echo "$tests_output" | jq '[.[] | select(.test=="all_reduce_perf") | (.summary.busbw_gbps // .summary.avg_busbw_gbps // 0)] | max // 0' 2>/dev/null)
 # Ensure numeric (jq may return null)
 peak_busbw=$(echo "$peak_busbw" | grep -E '^[0-9.]+$' || echo "0")
+error_count=$(echo "$tests_output" | jq '[.[] | select(.error != null and .error != "")] | length' 2>/dev/null || echo 0)
 
 if [ "$peak_busbw" = "0" ] && [ "$NGPUS" -ge 2 ]; then
-    log_warn "NCCL all_reduce busbw=0 with $NGPUS GPUs — possible parsing failure"
-    log_warn "Check nccl-tests log for output format changes"
+    if [ "${error_count:-0}" -gt 0 ] 2>/dev/null; then
+        log_error "NCCL all_reduce produced runtime errors and no bus bandwidth"
+    else
+        log_warn "NCCL all_reduce busbw=0 with $NGPUS GPUs — possible parsing failure"
+        log_warn "Check nccl-tests log for output format changes"
+    fi
 fi
 
-efficiency="N/A"
-if [ "$nvlink_bw" != "0" ] && [ "$nvlink_bw" != "null" ] && [ -n "$peak_busbw" ] && [ "${peak_busbw}" != "0" ]; then
-    efficiency=$(echo "scale=1; $peak_busbw / $nvlink_bw * 100" | bc 2>/dev/null || echo "N/A")
-fi
+status="ok"
+[ "${error_count:-0}" -gt 0 ] 2>/dev/null && status="warn"
+[ "$peak_busbw" = "0" ] && [ "${error_count:-0}" -gt 0 ] 2>/dev/null && status="error"
 
 RESULT=$(jq -n \
     --argjson tests "$tests_output" \
     --arg ngpus "$NGPUS" \
     --arg peak "$peak_busbw" \
-    --arg theo "$nvlink_bw" \
-    --arg eff "$efficiency" \
+    --arg errc "$error_count" \
     '{
         gpu_count: ($ngpus | tonumber),
         tests: $tests,
         peak_allreduce_busbw_gbps: ($peak | tonumber? // $peak),
-        theoretical_nvlink_bw_gbps: ($theo | tonumber? // $theo),
-        efficiency_pct: $eff
+        runtime_error_count: ($errc | tonumber)
     }')
 
-echo "$RESULT" | emit_json "nccl-tests" "ok"
+echo "$RESULT" | emit_json "nccl-tests" "$status"
 log_ok "NCCL tests complete — peak all_reduce busbw: ${peak_busbw} GB/s"
-echo "$RESULT" | jq '{gpu_count, peak_allreduce_busbw_gbps, theoretical_nvlink_bw_gbps, efficiency_pct}'
+echo "$RESULT" | jq '{gpu_count, peak_allreduce_busbw_gbps, runtime_error_count}'
+if [ "$status" = "error" ]; then
+    exit 1
+fi

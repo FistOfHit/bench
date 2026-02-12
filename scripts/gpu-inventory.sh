@@ -206,30 +206,21 @@ print(json.dumps(topo))
     fi
 fi
 
-# ── Spec lookup ──
-primary_model=$(echo "$RAW_GPU_DATA" | head -1 | cut -d',' -f2 | sed 's/^ *//;s/ *$//')
-spec=$(lookup_gpu_spec "$primary_model")
-
-# ── Validate JSON and normalize (set -e would exit when jq fails; spec from lookup_gpu_spec can be malformed) ──
+# ── Validate JSON and normalize ──
 nvlink_json=$(echo "$nvlink_json" | jq -c . 2>/dev/null) || true
 echo "$nvlink_json" | jq -e . >/dev/null 2>&1 || nvlink_json='{"available":false}'
 topology_json=$(echo "$topology_json" | jq -c . 2>/dev/null) || true
 echo "$topology_json" | jq -e . >/dev/null 2>&1 || topology_json='{}'
 gpu_json=$(echo "$gpu_json" | jq -c . 2>/dev/null) || true
 echo "$gpu_json" | jq -e . >/dev/null 2>&1 || gpu_json='[]'
-spec=$(echo "$spec" | jq -c . 2>/dev/null) || true
-echo "$spec" | jq -e . >/dev/null 2>&1 || spec='{}'
 
 TMP_GPU=$(mktemp -p "${HPC_WORK_DIR}" gpu_json.XXXXXX)
-TMP_SPEC=$(mktemp -p "${HPC_WORK_DIR}" gpu_spec.XXXXXX)
 TMP_NVL=$(mktemp -p "${HPC_WORK_DIR}" nvlink.XXXXXX)
 TMP_TOP=$(mktemp -p "${HPC_WORK_DIR}" topo.XXXXXX)
 printf '%s' "$gpu_json" > "$TMP_GPU"
-# Write only validated JSON to avoid slurpfile reading malformed spec from lookup_gpu_spec
-echo "$spec" | jq -c . > "$TMP_SPEC" 2>/dev/null || printf '%s' '{}' > "$TMP_SPEC"
 printf '%s' "$nvlink_json" > "$TMP_NVL"
 printf '%s' "$topology_json" > "$TMP_TOP"
-register_cleanup "$TMP_GPU" "$TMP_SPEC" "$TMP_NVL" "$TMP_TOP"
+register_cleanup "$TMP_GPU" "$TMP_NVL" "$TMP_TOP"
 
 # ── Build result (sanitize string args for JSON safety) ──
 driver_ver=$(printf '%s' "$driver_ver" | tr -d '\000-\037')
@@ -240,13 +231,12 @@ RESULT=$(jq -n \
     --arg cuda "$cuda_ver" \
     --arg nvcc "$nvcc_ver" \
     --slurpfile gpus "$TMP_GPU" \
-    --slurpfile spec_arr "$TMP_SPEC" \
     --slurpfile nvlink_arr "$TMP_NVL" \
     --slurpfile topo_arr "$TMP_TOP" \
     --argjson virt "$VIRT_INFO" \
     --arg note "$VIRT_NOTE" \
     --argjson detected_count "$gpu_count_detected" \
-    '$spec_arr[0] as $spec | $nvlink_arr[0] as $nvlink | $topo_arr[0] as $topo | {
+    '$nvlink_arr[0] as $nvlink | $topo_arr[0] as $topo | {
         driver_version: $drv,
         cuda_version: $cuda,
         nvcc_version: $nvcc,
@@ -254,7 +244,6 @@ RESULT=$(jq -n \
         gpus: $gpus[0],
         nvlink: $nvlink,
         topology: $topo,
-        reference_spec: $spec,
         virtualization: $virt,
         note: (if $note != "" then $note else null end)
     }')

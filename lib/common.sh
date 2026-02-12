@@ -33,7 +33,6 @@ case "$HPC_RESULTS_DIR" in
 esac
 export HPC_LOG_DIR="${HPC_LOG_DIR:-${HPC_RESULTS_DIR}/logs}"
 export HPC_WORK_DIR="${HPC_WORK_DIR:-/tmp/hpc-bench-work}"
-export HPC_SPECS_FILE="${HPC_BENCH_ROOT}/specs/hardware-specs.json"
 
 mkdir -p "$HPC_RESULTS_DIR" "$HPC_LOG_DIR" "$HPC_WORK_DIR"
 
@@ -251,99 +250,6 @@ pkg_update() {
         dnf) dnf makecache ;;
         yum) yum makecache ;;
     esac
-}
-
-# ── GPU spec lookup ──
-lookup_gpu_spec() {
-    local model="$1"
-    if [ ! -f "$HPC_SPECS_FILE" ]; then
-        log_warn "Hardware specs file not found: $HPC_SPECS_FILE"
-        echo '{}'
-        return
-    fi
-    # Sanitize: strip leading/trailing whitespace and control chars
-    model=$(echo "$model" | tr -d '[:cntrl:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    if [ -z "$model" ] || [ "$model" = "unknown" ]; then
-        echo '{}'
-        return
-    fi
-
-    # Try exact match first
-    local result
-    result=$(jq --arg m "$model" '.gpus[$m] // empty' "$HPC_SPECS_FILE" 2>/dev/null)
-    if [ -n "$result" ]; then
-        echo "$result" | jq -c . >/dev/null 2>&1 && echo "$result" || echo '{}'
-        return
-    fi
-
-    # Scored fuzzy match using python3 for robustness.
-    # Output prefix: NONE<TAB>reason = no match; WARN<TAB>json = word-overlap match (log warning); else raw json.
-    result=$(jq -r '.gpus | to_entries[] | "\(.key)\t\(.value | @json)"' "$HPC_SPECS_FILE" 2>/dev/null | \
-        python3 -c "
-import sys, re
-
-model = sys.argv[1]
-model_norm = re.sub(r'[-_/\s]+', ' ', model).lower().strip()
-
-best_key = None
-best_score = -1
-best_val = None
-match_type = None  # 'substring' | 'word_overlap'
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    key, val = line.split('\t', 1)
-    key_norm = re.sub(r'[-_/\s]+', ' ', key).lower().strip()
-
-    score = 0
-    mtype = None
-    key_words = key_norm.split()
-    model_words = model_norm.split()
-
-    if key_norm in model_norm:
-        score = len(key_norm) * 10
-        mtype = 'substring'
-    elif model_norm in key_norm:
-        score = len(model_norm) * 5
-        mtype = 'substring'
-    else:
-        common = sum(1 for w in key_words if w in model_words)
-        if common >= 2:
-            score = common * 3
-            mtype = 'word_overlap'
-
-    if score > best_score:
-        best_score = score
-        best_key = key
-        best_val = val
-        match_type = mtype
-
-if best_score > 0 and best_val:
-    if match_type == 'word_overlap':
-        print('WARN\t' + best_val)
-    else:
-        print(best_val)
-else:
-    print('NONE')
-" "$model" 2>/dev/null) || result='NONE'
-
-    # Handle no-match: return structured object so callers can distinguish from \"spec found, value 0\"
-    if [ -n "$result" ] && [ "${result#NONE}" != "$result" ]; then
-        local reason="no spec for '${model}'"
-        jq -n --arg r "$reason" '{matched: false, reason: $r}'
-        return
-    fi
-    # Word-overlap fuzzy match: log warning then use the spec
-    if [ -n "$result" ] && [ "${result#WARN	}" != "$result" ]; then
-        log_warn "Fuzzy GPU spec match (word overlap) for \"$model\" — verify spec is correct"
-        result="${result#WARN	}"
-    fi
-    if [ -z "$result" ] || [ "$result" = "null" ]; then
-        result='{}'
-    fi
-    echo "$result" | jq -c . >/dev/null 2>&1 && echo "$result" || echo '{}'
 }
 
 # ── Cleanup registration ──
