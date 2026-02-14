@@ -170,6 +170,16 @@ if [ "$hpl_method" = "none" ]; then
         hpl_skip_note="no usable container runtime and xhpl binary not found"
     fi
     hpl_err_detail=$(printf '%s' "${hpl_output:-}" | awk 'NF{print; exit}' | tr -d '[:cntrl:]')
+    # In CI / quick runs, HPL is best-effort: missing container image, blocked egress,
+    # or unavailable packages shouldn't fail the entire suite.
+    if [ "${HPC_CI:-0}" = "1" ] || [ "${HPC_QUICK:-0}" = "1" ]; then
+        log_warn "HPL unavailable; skipping: $hpl_skip_note"
+        jq -n --arg note "$hpl_skip_note" --arg detail "$hpl_err_detail" \
+            '{note: "HPL unavailable", skip_reason: $note, detail: (if $detail != "" then $detail else null end)}' \
+            | emit_json "hpl-cpu" "skipped"
+        exit 0
+    fi
+
     log_error "HPL unavailable: $hpl_skip_note"
     jq -n --arg error "$hpl_skip_note" --arg detail "$hpl_err_detail" \
         '{error: $error, detail: (if $detail != "" then $detail else null end)}' | emit_json "hpl-cpu" "error"
@@ -181,7 +191,9 @@ fi
 gflops=$(echo "$hpl_output" | awk '/WR[0-9]/ {print $NF}' | tail -1)
 hpl_time=$(echo "$hpl_output" | awk '/WR[0-9]/ {print $(NF-1)}' | tail -1)
 residual=$(echo "$hpl_output" | grep -i "||Ax-b||" | tail -1 | awk '{print $NF}')
-passed=$(echo "$hpl_output" | grep -ci "PASSED" || echo 0)
+# `grep -c` prints a count even when it exits 1 (no matches). Avoid `|| echo 0`
+# which would produce `0\n0` and break jq's `tonumber`.
+passed=$(echo "$hpl_output" | grep -ci "PASSED" || true)
 
 RESULT=$(jq -n \
     --arg method "$hpl_method" \
