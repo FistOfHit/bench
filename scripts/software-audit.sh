@@ -80,7 +80,9 @@ fi
 container_json="{}"
 if has_cmd docker; then
     docker_ver=$(docker --version 2>/dev/null)
-    nvidia_docker=$(docker info 2>/dev/null | grep -c -i "nvidia" || echo 0)
+    # `grep -c` prints a count even when it exits 1 (no matches). With `set -euo pipefail`,
+    # using `|| echo 0` would append a second `0`, yielding `0\n0` and breaking jq's `tonumber`.
+    nvidia_docker=$(docker info 2>/dev/null | grep -ci "nvidia" || true)
     container_json=$(jq -n --arg v "$docker_ver" --arg nv "$nvidia_docker" \
         '{runtime: "docker", version: $v, nvidia_runtime: ($nv | tonumber > 0)}')
 elif has_cmd podman; then
