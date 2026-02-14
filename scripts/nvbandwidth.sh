@@ -14,7 +14,7 @@ NVB_BIN="${NVB_DIR}/nvbandwidth"
 if [ ! -x "$NVB_BIN" ]; then
     # 1. Check PATH
     if has_cmd nvbandwidth; then
-        NVB_BIN=$(which nvbandwidth)
+        NVB_BIN=$(command -v nvbandwidth)
         log_info "Found nvbandwidth in PATH: $NVB_BIN"
     else
         # 2. Check common CUDA locations
@@ -189,6 +189,4 @@ RESULT=$(jq -n \
         p2p_status: $p2p
     }')
 
-echo "$RESULT" | emit_json "nvbandwidth" "ok"
-log_ok "nvbandwidth complete"
-echo "$RESULT" | jq .
+finish_module "nvbandwidth" "ok" "$RESULT"

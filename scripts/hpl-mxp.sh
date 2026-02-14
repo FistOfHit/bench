@@ -29,9 +29,7 @@ if docker_has_nvidia_runtime; then
 elif has_cmd nvidia-docker; then
     CONTAINER_CMD="nvidia-docker"
 else
-    log_warn "No GPU-capable container runtime — skipping HPL-MxP"
-    echo '{"note":"no nvidia container runtime"}' | emit_json "hpl-mxp" "skipped"
-    exit 0
+    skip_module "hpl-mxp" "no GPU-capable container runtime"
 fi
 
 # In VMs, Docker/pipe often causes SIGPIPE (exit 141); treat as skipped so suite can pass
@@ -83,9 +81,9 @@ done
 
 log_info "HPL-MxP: N=$N, NB=$NB, P=$P, Q=$Q, GPUs=$NGPUS, GPU_MEM=${GPU_MEM_MB}MB"
 
-# ── Container image ──
-HPL_IMAGE="nvcr.io/nvidia/hpc-benchmarks:24.03"
-HPL_IMAGE_ALT="nvcr.io/nvidia/hpc-benchmarks:23.10"
+# ── Container image (configurable via conf/defaults.sh) ──
+HPL_IMAGE="${HPL_IMAGE:-nvcr.io/nvidia/hpc-benchmarks:24.03}"
+HPL_IMAGE_ALT="${HPL_IMAGE_ALT:-nvcr.io/nvidia/hpc-benchmarks:23.10}"
 
 # Check if image is already available locally (avoids pull when possible)
 _hpl_image_ready=false
@@ -178,7 +176,7 @@ EOF
 # ── Run HPL-MxP ──
 # Quick mode: short timeout; full: base 1800s + 1s per GB of total GPU memory
 if [ "${HPC_QUICK:-0}" = "1" ]; then
-    HPL_MXP_TIMEOUT=120
+    HPL_MXP_TIMEOUT=${HPL_MXP_TIMEOUT_QUICK:-120}
 else
     HPL_MXP_TIMEOUT=$((1800 + TOTAL_GPU_MEM_MB / 1024))
 fi
@@ -205,7 +203,7 @@ if [ -z "$hpl_output" ] || ! echo "$hpl_output" | grep -q "WR[0-9]\|PASSED"; the
 fi
 gflops=$(echo "$hpl_output" | awk '/WR[0-9]/ {print $NF}' | tail -1)
 hpl_time=$(echo "$hpl_output" | awk '/WR[0-9]/ {print $(NF-1)}' | tail -1)
-passed=$(echo "$hpl_output" | grep -ci "PASSED" || echo 0)
+passed=$(count_grep_re 'PASSED' "$hpl_output")
 
 RESULT=$(jq -n \
     --arg n "$N" \
@@ -227,6 +225,4 @@ RESULT=$(jq -n \
         passed: ($passed | tonumber > 0)
     }')
 
-echo "$RESULT" | emit_json "hpl-mxp" "ok"
-log_ok "HPL-MxP: ${gflops:-N/A} GFLOPS"
-echo "$RESULT" | jq .
+finish_module "hpl-mxp" "ok" "$RESULT"

@@ -59,6 +59,23 @@ log_info "OS: $OS_ID $OS_VERSION"
 PKG_MGR=$(detect_pkg_manager)
 log_info "Package manager: $PKG_MGR"
 
+# ── Helper: ensure NVIDIA CUDA apt repository is configured (idempotent) ──
+ensure_cuda_repo() {
+    [ "$PKG_MGR" = "apt" ] || return 0
+    if ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
+        log_info "CUDA repo already configured — skipping"
+        return 0
+    fi
+    local os_ver
+    os_ver=$(echo "${OS_VERSION:-22.04}" | tr -d '.')
+    local key_url="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${os_ver}/x86_64/3bf863cc.pub"
+    curl -fsSL "$key_url" 2>/dev/null \
+        | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
+    echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${os_ver}/x86_64/ /" \
+        > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
+    apt-get update 2>/dev/null || true
+}
+
 # ── Check root (skip for check-only) ──
 if [ "$CHECK_ONLY" = false ] && [ "$(id -u)" -ne 0 ]; then
     log_error "Must run as root. Use sudo."
@@ -128,8 +145,8 @@ if [ "$CHECK_ONLY" = true ]; then
     echo "═══════════════════════════════════════════"
 
     # Emit JSON
-    PRESENT_JSON=$(printf '%s\n' "${PRESENT[@]}" | jq -R . | jq -s .)
-    MISSING_JSON=$(printf '%s\n' "${MISSING[@]}" | jq -R . | jq -s .)
+    PRESENT_JSON=$(printf '%s\n' "${PRESENT[@]}" | json_array_from_lines "[]")
+    MISSING_JSON=$(printf '%s\n' "${MISSING[@]}" | json_array_from_lines "[]")
     jq -n --argjson present "$PRESENT_JSON" --argjson missing "$MISSING_JSON" \
         '{check_only: true, present: $present, missing: $missing, present_count: ($present | length), missing_count: ($missing | length)}' \
         | emit_json "bootstrap" "$([ ${#MISSING[@]} -gt 0 ] && echo "warn" || echo "ok")"
@@ -222,13 +239,7 @@ if [ "$INSTALL_NVIDIA" = true ]; then
     if [ "$NVIDIA_GPU_PRESENT" = true ] && [ "$HAS_GPU" = false ] && [ "$HAS_INTERNET" = true ] && [ "$PKG_MGR" = "apt" ]; then
         log_info "Installing NVIDIA driver (--install-nvidia, Ubuntu)..."
         # Add NVIDIA CUDA repo for driver + toolkit
-        if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
-            DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/3bf863cc.pub"
-            curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
-            echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/ /" \
-                > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
-            apt-get update 2>/dev/null || true
-        fi
+        ensure_cuda_repo
         # Dynamically find the latest nvidia-driver-*-server package
         _nvidia_drv_pkg=$(apt-cache search '^nvidia-driver-[0-9].*-server$' 2>/dev/null \
             | awk '{print $1}' | sort -t- -k3,3nr | head -1)
@@ -264,13 +275,7 @@ if [ "$INSTALL_NVIDIA" = true ]; then
             log_info "Use --install-nvidia on a machine with an NVIDIA GPU to install the driver."
             if [ "$HAS_INTERNET" = true ] && [ "$PKG_MGR" = "apt" ] && ! command -v nvcc &>/dev/null; then
                 log_info "Installing CUDA toolkit only (nvcc, libs) for development / future GPU..."
-                if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
-                    DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/3bf863cc.pub"
-                    curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
-                    echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/ /" \
-                        > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
-                    apt-get update 2>/dev/null || true
-                fi
+                ensure_cuda_repo
                 # Dynamically detect available CUDA toolkit version from repo
                 _cuda_installed=false
                 for _cuda_pkg in $(apt-cache search '^cuda-toolkit-[0-9]' 2>/dev/null | awk '{print $1}' | grep -E '^cuda-toolkit-[0-9]+-[0-9]+$' | sort -t- -k3,3nr -k4,4nr); do
@@ -299,16 +304,7 @@ if [ "$HAS_GPU" = true ] && ! has_cmd dcgmi && [ "$HAS_INTERNET" = true ]; then
     log_info "Attempting DCGM install..."
     case "$PKG_MGR" in
         apt)
-            # Check if CUDA repo already exists (avoid creating duplicates with conflicting signing)
-            if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
-                DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo $OS_VERSION | tr -d '.')/x86_64/3bf863cc.pub"
-                curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
-                echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo $OS_VERSION | tr -d '.')/x86_64/ /" \
-                    > /etc/apt/sources.list.d/datacenter-gpu-manager.list 2>/dev/null || true
-                apt-get update 2>/dev/null || true
-            else
-                log_info "CUDA repo already configured — skipping DCGM repo addition"
-            fi
+            ensure_cuda_repo
             apt-get install -y datacenter-gpu-manager 2>/dev/null || log_warn "DCGM install failed (non-fatal)"
             ;;
         dnf|yum)
@@ -323,16 +319,11 @@ fi
 # ── CUDA toolkit (nvcc) when driver works but nvcc missing (Ubuntu: from same repo as DCGM) ──
 if [ "$HAS_GPU" = true ] && [ "$HAS_INTERNET" = true ] && ! command -v nvcc &>/dev/null && [ "$PKG_MGR" = "apt" ]; then
     log_info "Installing CUDA toolkit (nvcc) for GPU benchmarks..."
-    if ! ls /etc/apt/sources.list.d/*cuda* 2>/dev/null | head -1 | grep -q .; then
-        DCGM_KEY="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/3bf863cc.pub"
-        curl -fsSL "$DCGM_KEY" 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true
-        echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(echo "${OS_VERSION:-22.04}" | tr -d '.')/x86_64/ /" \
-            > /etc/apt/sources.list.d/cuda-ubuntu.list 2>/dev/null || true
-        apt-get update 2>/dev/null || true
-    fi
+    ensure_cuda_repo
     # Detect CUDA version from driver and try matching toolkit; fall back to latest available
     _cuda_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
-    _cuda_runtime=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -1)
+    # Avoid grep -P; parse from nvidia-smi banner instead.
+    _cuda_runtime=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
     _cuda_major=$(echo "${_cuda_runtime:-12.0}" | cut -d. -f1)
     _cuda_minor=$(echo "${_cuda_runtime:-12.0}" | cut -d. -f2)
     _cuda_installed=false

@@ -42,7 +42,7 @@ if has_cmd nvidia-smi; then
     done < <(nvidia-smi --query-gpu=index,name,temperature.gpu,temperature.memory,power.draw,power.limit,fan.speed \
         --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]')
     if [ -n "$_gpu_rows" ]; then
-        gpu_thermal=$(printf '%s' "$_gpu_rows" | jq -sc '.')
+        gpu_thermal=$(printf '%s' "$_gpu_rows" | json_slurp_objects_or "[]")
     fi
 
     # ── Throttle detection ──
@@ -55,6 +55,7 @@ if has_cmd nvidia-smi; then
     }
     END { print "]" }
     ' 2>/dev/null || echo "[]")
+    gpu_throttle=$(json_compact_or "$gpu_throttle" "[]")
 
     # ── Event query for historical throttling ──
     log_info "Querying GPU throttle events..."
@@ -70,7 +71,7 @@ if [ "$VIRT_TYPE" = "none" ] && [ -d /sys/class/thermal ]; then
         [ -n "$temp" ] && echo "{\"zone\":\"$(basename "$tz")\",\"type\":\"$type\",\"temp_c\":$(echo "scale=1; $temp/1000" | bc)}"
     done) || true
     if [ -n "$_thermal_out" ]; then
-        cpu_temps=$(echo "$_thermal_out" | jq -s '.' 2>/dev/null) || cpu_temps="[]"
+        cpu_temps=$(printf '%s\n' "$_thermal_out" | json_slurp_objects_or "[]")
     fi
 elif [ "$VIRT_TYPE" != "none" ]; then
     log_warn "Skipping CPU thermal zones - not reliable in VMs"
@@ -91,6 +92,7 @@ if [ "$VIRT_TYPE" = "none" ] && has_cmd ipmitool; then
     }
     END { print "]" }
     ' 2>/dev/null || echo "[]")
+    fan_json=$(json_compact_or "$fan_json" "[]")
 elif [ "$VIRT_TYPE" != "none" ]; then
     log_warn "Skipping IPMI fan sensors - not available in VMs"
 fi
@@ -111,6 +113,7 @@ if [ "$VIRT_TYPE" = "none" ] && has_cmd ipmitool; then
     }
     END { print "]" }
     ' 2>/dev/null || echo "[]")
+    psu_json=$(json_compact_or "$psu_json" "[]")
 fi
 
 # ── GPU count from single source (gpu-inventory or nvidia-smi) for report consistency ──
@@ -118,6 +121,7 @@ GPU_COUNT_REPORT=0
 if has_cmd nvidia-smi; then
     GPU_COUNT_REPORT=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l | tr -d '[:space:]')
 fi
+GPU_COUNT_REPORT=$(int_or_default "${GPU_COUNT_REPORT:-0}" 0)
 if [ -f "${HPC_RESULTS_DIR}/gpu-inventory.json" ]; then
     gpu_inv_count=$(jq -r '.gpu_count // (.gpus | length) // 0' "${HPC_RESULTS_DIR}/gpu-inventory.json" 2>/dev/null) || true
     if [ "${gpu_inv_count:-0}" -gt 0 ] 2>/dev/null; then
@@ -131,8 +135,8 @@ fi
 
 # ── Assess thermal health ──
 thermal_status="ok"
-# Check if any GPU is above 85°C
-hot_gpus=$(echo "$gpu_thermal" | jq '[.[] | select(.temp_gpu_c != null and .temp_gpu_c > 85)] | length' 2>/dev/null) || hot_gpus=0
+# Threshold from conf/defaults.sh (default: 85°C)
+hot_gpus=$(echo "$gpu_thermal" | jq --argjson t "${GPU_THERMAL_WARN_C:-85}" '[.[] | select(.temp_gpu_c != null and .temp_gpu_c > $t)] | length' 2>/dev/null) || hot_gpus=0
 [ "${hot_gpus:-0}" -gt 0 ] 2>/dev/null && thermal_status="warn"
 # Check for active throttling
 active_throttle=$(echo "$gpu_throttle" | jq '[.[] | select(.hw_thermal != "Not Active" and .hw_thermal != "0x0000000000000000")] | length' 2>/dev/null) || active_throttle=0
@@ -162,6 +166,4 @@ RESULT=$(jq -n \
         note: (if $note != "" then $note else null end)
     }')
 
-echo "$RESULT" | emit_json "thermal-power" "$thermal_status"
-log_ok "Thermal assessment: $thermal_status"
-echo "$RESULT" | jq '{thermal_status, hot_gpus_above_85c, gpu_count}'
+finish_module "thermal-power" "$thermal_status" "$RESULT" '{thermal_status, hot_gpus_above_85c, gpu_count}'

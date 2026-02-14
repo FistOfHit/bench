@@ -17,6 +17,13 @@ fi
 
 # ── Paths ──
 export HPC_BENCH_ROOT="${HPC_BENCH_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# ── Load central defaults (thresholds, tunables) ──
+_defaults="${HPC_BENCH_ROOT}/conf/defaults.sh"
+if [ -f "$_defaults" ]; then
+    # shellcheck source=../conf/defaults.sh
+    source "$_defaults"
+fi
 if [ -z "${HPC_RESULTS_DIR:-}" ]; then
     if [ "$(id -u)" -eq 0 ]; then
         export HPC_RESULTS_DIR="/var/log/hpc-bench/results"
@@ -50,6 +57,18 @@ log_ok()    { _log OK    "$@"; }
 # Emit a JSON result file for a module
 # _HPC_JSON_EMITTED tracks whether this was called, used by the crash-safety trap
 _HPC_JSON_EMITTED=false
+
+# Standard module completion: emit JSON, log summary, print compact output.
+# Usage: finish_module "module-name" "status" '{...json...}' '.{key1, key2}'
+#   json_body  — full JSON payload (piped to emit_json)
+#   jq_summary — optional jq filter for compact stdout (e.g. '{status, score}')
+finish_module() {
+    local module="$1" status="$2" json_body="$3" jq_summary="${4:-.}"
+    echo "$json_body" | emit_json "$module" "$status"
+    log_ok "$module complete (status: $status)"
+    echo "$json_body" | jq "$jq_summary" 2>/dev/null || true
+}
+
 emit_json() {
     _HPC_JSON_EMITTED=true
     local module="$1" status="$2" file="${HPC_RESULTS_DIR}/${1}.json"
@@ -116,6 +135,84 @@ json_numeric_or_null() {
     fi
 }
 
+# Normalize a value to an integer string, else emit default (0 by default).
+int_or_default() {
+    local raw="${1-}" def="${2:-0}"
+    raw=$(trim_ws "$raw")
+    case "$raw" in
+        ''|*[!0-9]*)
+            printf '%s' "$def"
+            ;;
+        *)
+            printf '%s' "$raw"
+            ;;
+    esac
+}
+
+# Count grep matches safely; never emits "0\n0".
+# Usage:
+#   count_grep_re 'FAULTY' "$text"
+#   printf '%s\n' "$text" | count_grep_re 'FAULTY'
+count_grep_re() {
+    local re="${1:?count_grep_re: regex required}"
+    local count
+    if [ $# -ge 2 ]; then
+        count=$(printf '%s\n' "${2-}" | grep -cE -- "$re" 2>/dev/null || true)
+    else
+        count=$(grep -cE -- "$re" 2>/dev/null || true)
+    fi
+    int_or_default "${count:-0}" 0
+}
+
+# Compact JSON if valid, else emit fallback (default: {}).
+json_compact_or() {
+    local json="${1-}" fallback="${2:-{}}"
+    if [ -n "$json" ] && printf '%s' "$json" | jq -c . >/dev/null 2>&1; then
+        printf '%s' "$json" | jq -c . 2>/dev/null || printf '%s' "$fallback"
+        return 0
+    fi
+    printf '%s' "$fallback"
+}
+
+# Read newline-delimited text from stdin and return a JSON array of strings.
+# Empty lines are dropped.
+json_array_from_lines() {
+    local fallback="${1:-[]}"
+    local out
+    out=$(jq -R 'select(length>0)' 2>/dev/null | jq -cs '.' 2>/dev/null) || true
+    json_compact_or "${out:-}" "$fallback"
+}
+
+# Read newline-delimited JSON objects from stdin and return a JSON array.
+json_slurp_objects_or() {
+    local fallback="${1:-[]}"
+    local out
+    out=$(jq -cs '.' 2>/dev/null) || true
+    json_compact_or "${out:-}" "$fallback"
+}
+
+# Write a JSON blob to a temp file (validated + compacted), register cleanup, echo path.
+# If invalid/empty, writes the fallback (default: {}).
+json_tmpfile() {
+    local prefix="${1:?json_tmpfile: prefix required}"
+    local json="${2-}"
+    local fallback="${3:-{}}"
+    local tmp
+    tmp=$(mktemp -p "${HPC_WORK_DIR}" "${prefix}.XXXXXX")
+    if [ -n "$json" ]; then
+        if ! printf '%s' "$json" | jq -c . >"$tmp" 2>/dev/null; then
+            printf '%s' "$fallback" >"$tmp"
+        fi
+    else
+        printf '%s' "$fallback" >"$tmp"
+    fi
+    register_cleanup "$tmp"
+    printf '%s' "$tmp"
+}
+
+# Prefer this over which(1); returns empty on not found.
+cmd_path() { command -v "$1" 2>/dev/null || true; }
+
 # ── Command availability ──
 has_cmd() { command -v "$1" &>/dev/null; }
 require_cmd() {
@@ -129,8 +226,10 @@ require_cmd() {
 
 # ── Safe JSON pipe ──
 # Runs a command pipeline and returns valid JSON or a fallback.
-safe_json_var() {
-    local _varname="$1" _fallback="$2"; shift 2
+# Usage: local myvar; myvar=$(safe_json_pipe '{}' some_command --args)
+# Replaces the old eval-based safe_json_var(); callers use command substitution instead.
+safe_json_pipe() {
+    local _fallback="$1"; shift
     local _output
     _output=$("$@" 2>/dev/null) || true
     # Sanitize control characters
@@ -138,10 +237,7 @@ safe_json_var() {
     if [ -z "$_output" ] || ! echo "$_output" | jq . >/dev/null 2>&1; then
         _output="$_fallback"
     fi
-    eval "$_varname=\$(cat <<'SAFE_JSON_EOF'
-$_output
-SAFE_JSON_EOF
-)"
+    printf '%s' "$_output"
 }
 
 # ── Virtualization detection ──
@@ -288,19 +384,26 @@ do_cleanup() {
 }
 trap do_cleanup EXIT
 
+# ── Skip module helper ──
+# Usage: skip_module "module-name" "reason text"
+# Emits a standard "skipped" JSON record and exits cleanly.
+skip_module() {
+    local module="${1:?skip_module: module name required}"
+    local reason="${2:-not applicable}"
+    log_warn "Skipping $module: $reason"
+    jq -n --arg note "$reason" '{note: $note, skip_reason: $note}' | emit_json "$module" "skipped"
+    exit 0
+}
+
 # ── GPU requirement (skip module when no NVIDIA GPU) ──
 require_gpu() {
     local module="${1:?require_gpu: module name required}"
     local note="${2:-no GPU}"
     if ! has_cmd nvidia-smi; then
-        log_warn "nvidia-smi not found — skipping $module"
-        jq -n --arg note "$note" '{note: $note}' | emit_json "$module" "skipped"
-        exit 0
+        skip_module "$module" "nvidia-smi not found"
     fi
     if ! nvidia-smi &>/dev/null; then
-        log_warn "nvidia-smi failed — skipping $module"
-        jq -n --arg note "nvidia-smi failed" '{note: $note}' | emit_json "$module" "skipped"
-        exit 0
+        skip_module "$module" "nvidia-smi failed"
     fi
 }
 
@@ -337,7 +440,7 @@ nvlink_status() {
 
     for ((i=0; i<gpu_count; i++)); do
         local gpu_links
-        gpu_links=$(nvidia-smi nvlink -i "$i" --status_query 2>/dev/null | grep -c "NVLink" || echo 0)
+        gpu_links=$(nvidia-smi nvlink -i "$i" --status_query 2>/dev/null | count_grep_re 'NVLink')
         link_count=$((link_count + gpu_links))
     done
 

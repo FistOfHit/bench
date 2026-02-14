@@ -9,35 +9,20 @@ log_info "=== InfiniBand Tests ==="
 VIRT_INFO=$(detect_virtualization)
 VIRT_TYPE=$(echo "$VIRT_INFO" | jq -r '.type')
 
-if [ "$VIRT_TYPE" != "none" ]; then
-    log_warn "Running in virtualized environment ($VIRT_TYPE) — InfiniBand not accessible"
-    jq -n --arg note "InfiniBand not available in virtualized environment" --argjson virtualization "$VIRT_INFO" '{note: $note, virtualization: $virtualization}' | emit_json "ib-tests" "skipped"
-    exit 0
-fi
+[ "$VIRT_TYPE" != "none" ] && skip_module "ib-tests" "InfiniBand not available in virtualized environment ($VIRT_TYPE)"
 
 # Check for IB hardware
-if ! ls /sys/class/infiniband/*/ports/*/state 2>/dev/null | head -1 | grep -q .; then
-    log_warn "No InfiniBand hardware detected"
-    echo '{"note":"no IB hardware"}' | emit_json "ib-tests" "skipped"
-    exit 0
-fi
+ls /sys/class/infiniband/*/ports/*/state 2>/dev/null | head -1 | grep -q . \
+    || skip_module "ib-tests" "no InfiniBand hardware detected"
 
 # Check for perftest tools
 for tool in ib_write_bw ib_read_bw ib_send_lat; do
-    if ! has_cmd "$tool"; then
-        log_warn "$tool not found — install perftest package"
-        echo '{"note":"perftest not installed"}' | emit_json "ib-tests" "skipped"
-        exit 0
-    fi
+    has_cmd "$tool" || skip_module "ib-tests" "$tool not found — install perftest package"
 done
 
 # Find active IB device
 IB_DEV=$(ibstat 2>/dev/null | awk '/^CA / {dev=$2; gsub(/'\''/, "", dev)} /State:.*Active/ {print dev; exit}')
-if [ -z "$IB_DEV" ]; then
-    log_warn "No active IB port found"
-    echo '{"note":"no active IB port"}' | emit_json "ib-tests" "skipped"
-    exit 0
-fi
+[ -z "$IB_DEV" ] && skip_module "ib-tests" "no active IB port found"
 log_info "Using IB device: $IB_DEV"
 
 # ── Check and fix memlock ulimit ──
@@ -100,6 +85,9 @@ run_ib_test() {
 write_bw=$(run_ib_test "ib_write_bw" "ib_write_bw")
 read_bw=$(run_ib_test "ib_read_bw" "ib_read_bw")
 send_lat=$(run_ib_test "ib_send_lat" "ib_send_lat")
+write_bw=$(json_compact_or "$write_bw" "{}")
+read_bw=$(json_compact_or "$read_bw" "{}")
+send_lat=$(json_compact_or "$send_lat" "{}")
 
 # Theoretical for context
 theo_gbps=0
@@ -137,6 +125,4 @@ RESULT=$(jq -n \
         test_mode: "loopback"
     }')
 
-echo "$RESULT" | emit_json "ib-tests" "ok"
-log_ok "IB tests complete on $IB_DEV (rate: ${ib_rate} Gb/s)"
-echo "$RESULT" | jq .
+finish_module "ib-tests" "ok" "$RESULT"

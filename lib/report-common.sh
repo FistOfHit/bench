@@ -16,11 +16,24 @@ jf() {
 has_result() { [ -f "${HPC_RESULTS_DIR}/${1}.json" ]; }
 mod_status() { jf "${HPC_RESULTS_DIR}/${1}.json" '.status' 'missing'; }
 
-ALL_MODULES=(
-    bootstrap inventory gpu-inventory topology network-inventory bmc-inventory software-audit
-    dcgm-diag gpu-burn nccl-tests nvbandwidth stream-bench storage-bench hpl-cpu hpl-mxp ib-tests
-    network-diag filesystem-diag thermal-power security-scan
-)
+# Derive ALL_MODULES from the manifest (single source of truth).
+# Sorted by phase + order so scorecard/report renders in execution order.
+# Excludes the "report" module itself (it is the generator, not a scored module).
+_modules_manifest="${HPC_BENCH_ROOT}/specs/modules.json"
+if [ -f "$_modules_manifest" ]; then
+    mapfile -t ALL_MODULES < <(
+        jq -r '.modules | sort_by(.phase, .order) | .[].name' "$_modules_manifest" 2>/dev/null \
+            | grep -v '^report$'
+    )
+else
+    # Fallback: hardcoded list (kept in sync manually if manifest is missing)
+    ALL_MODULES=(
+        bootstrap runtime-sanity
+        inventory gpu-inventory topology network-inventory bmc-inventory software-audit
+        dcgm-diag gpu-burn nccl-tests nvbandwidth stream-bench storage-bench hpl-cpu hpl-mxp ib-tests
+        network-diag filesystem-diag thermal-power security-scan
+    )
+fi
 
 declare -A SCORES
 declare -A SCORE_NOTES
@@ -43,6 +56,15 @@ score_module() {
     esac
 
     case "$mod" in
+        runtime-sanity)
+            if [ "$score" = "PASS" ]; then
+                local rt_note
+                rt_note=$(jf "${HPC_RESULTS_DIR}/runtime-sanity.json" '.note' '')
+                if [ "$status" = "warn" ]; then
+                    score="WARN"; note="${rt_note:-NVIDIA container runtime missing}"
+                fi
+            fi
+            ;;
         hpl-cpu)
             if [ "$score" = "PASS" ]; then
                 local passed
@@ -75,11 +97,11 @@ score_module() {
         security-scan)
             if [ "$score" = "PASS" ]; then
                 local sec_status warn_count
-                sec_status=$(jf "${HPC_RESULTS_DIR}/security-scan.json" '.status' 'pass')
+                sec_status=$(jf "${HPC_RESULTS_DIR}/security-scan.json" '.status' 'ok')
                 if [ "$sec_status" = "warn" ]; then
                     warn_count=$(jf "${HPC_RESULTS_DIR}/security-scan.json" '.warnings | length' '0')
                     score="WARN"; note="${warn_count} security warnings"
-                elif [ "$sec_status" = "fail" ]; then
+                elif [ "$sec_status" = "error" ] || [ "$sec_status" = "fail" ]; then
                     score="FAIL"; note="Security scan failed"
                 fi
             fi
@@ -92,7 +114,7 @@ score_module() {
                 if [ "$thermal_st" = "fail" ]; then
                     score="FAIL"; note="Active thermal throttling detected"
                 elif [ "$thermal_st" = "warn" ] || [ "${hot_gpus:-0}" -gt 0 ] 2>/dev/null; then
-                    score="WARN"; note="${hot_gpus} GPU(s) above 85°C"
+                    score="WARN"; note="${hot_gpus} GPU(s) above ${GPU_THERMAL_WARN_C:-85}°C"
                 fi
             fi
             ;;

@@ -9,17 +9,8 @@ log_info "=== BMC Inventory ==="
 VIRT_INFO=$(detect_virtualization)
 VIRT_TYPE=$(echo "$VIRT_INFO" | jq -r '.type')
 
-if [ "$VIRT_TYPE" != "none" ]; then
-    log_warn "Running in virtualized environment ($VIRT_TYPE) — BMC not accessible"
-    jq -n --arg note "BMC not available in virtualized environment" --argjson virtualization "$VIRT_INFO" '{note: $note, virtualization: $virtualization}' | emit_json "bmc-inventory" "skipped"
-    exit 0
-fi
-
-if ! has_cmd ipmitool; then
-    log_warn "ipmitool not found — skipping BMC inventory"
-    echo '{"note":"ipmitool not available"}' | emit_json "bmc-inventory" "skipped"
-    exit 0
-fi
+[ "$VIRT_TYPE" != "none" ] && skip_module "bmc-inventory" "BMC not available in virtualized environment ($VIRT_TYPE)"
+has_cmd ipmitool || skip_module "bmc-inventory" "ipmitool not available"
 
 # Load IPMI kernel modules
 modprobe ipmi_devintf 2>/dev/null || true
@@ -27,11 +18,7 @@ modprobe ipmi_si 2>/dev/null || true
 sleep 1
 
 # Test if IPMI works
-if ! ipmitool mc info &>/dev/null; then
-    log_warn "IPMI not responding — no BMC or not accessible"
-    echo '{"note":"IPMI not responding"}' | emit_json "bmc-inventory" "skipped"
-    exit 0
-fi
+ipmitool mc info &>/dev/null || skip_module "bmc-inventory" "IPMI not responding"
 
 # ── BMC Info ──
 bmc_info=$(ipmitool mc info 2>/dev/null)
@@ -64,11 +51,15 @@ NF>=3 {
 }
 END { print "]" }
 ' 2>/dev/null || echo "[]")
+sensors_json=$(json_compact_or "$sensors_json" "[]")
 
 # Extract key categories
 temp_sensors=$(echo "$sensors_json" | jq '[.[] | select(.unit | test("degrees C"; "i"))]' 2>/dev/null || echo "[]")
 fan_sensors=$(echo "$sensors_json" | jq '[.[] | select(.unit | test("RPM"; "i"))]' 2>/dev/null || echo "[]")
 power_sensors=$(echo "$sensors_json" | jq '[.[] | select(.unit | test("Watts"; "i"))]' 2>/dev/null || echo "[]")
+temp_sensors=$(json_compact_or "$temp_sensors" "[]")
+fan_sensors=$(json_compact_or "$fan_sensors" "[]")
+power_sensors=$(json_compact_or "$power_sensors" "[]")
 
 RESULT=$(jq -n \
     --arg fw "$fw_version" \
@@ -88,6 +79,4 @@ RESULT=$(jq -n \
         all_sensors: $all_sensors
     }')
 
-echo "$RESULT" | emit_json "bmc-inventory" "ok"
-log_ok "BMC inventory complete"
-echo "$RESULT" | jq .
+finish_module "bmc-inventory" "ok" "$RESULT"

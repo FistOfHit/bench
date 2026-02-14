@@ -5,19 +5,13 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== Software Audit ==="
 
-# Helper: find version of a library
-find_lib_version() {
-    local name="$1"
-    # Try ldconfig
-    ldconfig -v 2>/dev/null | grep -i "$name" | head -1 | awk '{print $1}' | sed 's/.*\.so\.//'
-}
-
 # ── CUDA Toolkit ──
 cuda_version="none"
 cuda_path="none"
 if has_cmd nvcc; then
     cuda_version=$(nvcc --version 2>/dev/null | awk '/release/ {print $NF}' | tr -d ',')
-    cuda_path=$(which nvcc | sed 's|/bin/nvcc||')
+    nvcc_bin=$(command -v nvcc)
+    cuda_path="${nvcc_bin%/bin/nvcc}"
 elif [ -d /usr/local/cuda ]; then
     cuda_version=$(cat /usr/local/cuda/version.txt 2>/dev/null | awk '{print $NF}' || \
                    cat /usr/local/cuda/version.json 2>/dev/null | jq -r '.cuda.version' || echo "detected-noversion")
@@ -71,7 +65,7 @@ if has_cmd mpiexec.hydra; then
     mpi_arr+=("{\"name\":\"MVAPICH/IntelMPI\",\"version\":\"$mvapich_ver\"}")
 fi
 if [ ${#mpi_arr[@]} -gt 0 ]; then
-    mpi_json=$(printf '%s\n' "${mpi_arr[@]}" | jq -s '.' 2>/dev/null) || mpi_json="[]"
+    mpi_json=$(printf '%s\n' "${mpi_arr[@]}" | json_slurp_objects_or "[]")
 else
     mpi_json="[]"
 fi
@@ -116,6 +110,11 @@ for tool in perf nsys ncu nvtop htop gpustat; do
     has_cmd "$tool" && perf_tools+=("$tool")
 done
 
+perf_tools_json="[]"
+if [ ${#perf_tools[@]} -gt 0 ]; then
+    perf_tools_json=$(printf '%s\n' "${perf_tools[@]}" | json_array_from_lines "[]")
+fi
+
 RESULT=$(jq -n \
     --arg cuda "$cuda_version" \
     --arg cuda_path "$cuda_path" \
@@ -125,7 +124,7 @@ RESULT=$(jq -n \
     --argjson container "$container_json" \
     --arg fm "$fm_status" \
     --arg gdrcopy "$gdrcopy" \
-    --argjson perf_tools "$(if [ ${#perf_tools[@]} -gt 0 ]; then printf '%s\n' "${perf_tools[@]}" | jq -R . | jq -s '.'; else echo '[]'; fi)" \
+    --argjson perf_tools "$perf_tools_json" \
     '{
         cuda: {version: $cuda, path: $cuda_path},
         cudnn: $cudnn,
@@ -137,6 +136,4 @@ RESULT=$(jq -n \
         perf_tools: $perf_tools
     }')
 
-echo "$RESULT" | emit_json "software-audit" "ok"
-log_ok "Software audit complete"
-echo "$RESULT" | jq .
+finish_module "software-audit" "ok" "$RESULT"

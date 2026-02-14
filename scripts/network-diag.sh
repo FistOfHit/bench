@@ -32,16 +32,16 @@ if [ -n "$_ss_out" ]; then
     }
     END { print "]" }
     ') || listening="[]"
-    echo "$listening" | jq . >/dev/null 2>&1 || listening="[]"
+    listening=$(json_compact_or "$listening" "[]")
 fi
 
 # ── Routing ──
 routes=$(ip -j route show 2>/dev/null) || routes="[]"
-echo "$routes" | jq . >/dev/null 2>&1 || routes="[]"
+routes=$(json_compact_or "$routes" "[]")
 default_gw=$(ip route | awk '/default/ {print $3; exit}')
 
 # ── DNS ──
-dns_servers=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null | jq -R . | jq -s '.') || dns_servers="[]"
+dns_servers=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null | json_array_from_lines "[]")
 dns_search=$(awk '/^search/ {$1=""; print}' /etc/resolv.conf 2>/dev/null | xargs)
 
 RESULT=$(jq -n \
@@ -59,6 +59,4 @@ RESULT=$(jq -n \
         dns: {servers: $dns, search_domain: $search}
     }')
 
-echo "$RESULT" | emit_json "network-diag" "ok"
-log_ok "Network diagnostics complete"
-echo "$RESULT" | jq '{firewall_type: .firewall.type, listening_count: (.listening_ports | length), default_gw: .routing.default_gateway}'
+finish_module "network-diag" "ok" "$RESULT" '{firewall_type: .firewall.type, listening_count: (.listening_ports | length), default_gw: .routing.default_gateway}'

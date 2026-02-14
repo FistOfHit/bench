@@ -8,19 +8,11 @@ log_info "=== NCCL Tests ==="
 require_gpu "nccl-tests" "no GPU"
 
 NGPUS=$(gpu_count)
-if [ "$NGPUS" -lt 2 ]; then
-    log_warn "NCCL tests require >=2 GPUs, found $NGPUS"
-    echo "{\"note\":\"single GPU, skipping multi-GPU NCCL\",\"gpu_count\":$NGPUS}" | emit_json "nccl-tests" "skipped"
-    exit 0
-fi
+[ "$NGPUS" -lt 2 ] && skip_module "nccl-tests" "requires >=2 GPUs, found $NGPUS"
 
 # Check for NCCL
 NCCL_CHECK=$(ldconfig -p 2>/dev/null | grep libnccl || find /usr -name 'libnccl.so*' 2>/dev/null | head -1 || echo "")
-if [ -z "$NCCL_CHECK" ]; then
-    log_warn "NCCL library not found — skipping NCCL tests"
-    echo "{\"note\":\"NCCL not installed — required for multi-GPU collective tests\",\"gpu_count\":$NGPUS}" | emit_json "nccl-tests" "skipped"
-    exit 0
-fi
+[ -z "$NCCL_CHECK" ] && skip_module "nccl-tests" "NCCL library not installed"
 
 NCCL_DIR="${HPC_WORK_DIR}/nccl-tests"
 NCCL_BUILD="${NCCL_DIR}/build"
@@ -32,7 +24,7 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
     # Find CUDA path
     CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
     if [ ! -d "$CUDA_HOME" ]; then
-        nvcc_path="$(command -v nvcc 2>/dev/null || true)"
+        nvcc_path="$(cmd_path nvcc)"
         if [ -n "$nvcc_path" ]; then
             CUDA_HOME="$(dirname "$(dirname "$nvcc_path")")"
         fi
@@ -68,13 +60,14 @@ register_cleanup "$NCCL_DIR"
 
 # ── Run tests ──
 # Quick mode: single test (all_reduce_perf), tiny range 8B–1M, 1 iter — verifies NCCL path in ~20–30s; full: all 5 tests, 8B–8GB
+# Test parameters (timeouts from conf/defaults.sh)
 if [ "${HPC_QUICK:-0}" = "1" ]; then
     MIN_BYTES="8"
     MAX_BYTES="1M"
     STEP_FACTOR="2"
     NCCL_ITERS=1
     NCCL_WARMUP=0
-    NCCL_TIMEOUT=45
+    NCCL_TIMEOUT=${NCCL_TIMEOUT_QUICK:-45}
     NCCL_QUICK_TESTS="all_reduce_perf"   # single test to verify functionality
 else
     MIN_BYTES="8"
@@ -82,7 +75,7 @@ else
     STEP_FACTOR="2"
     NCCL_ITERS=20
     NCCL_WARMUP=5
-    NCCL_TIMEOUT=600
+    NCCL_TIMEOUT=${NCCL_TIMEOUT_FULL:-600}
     NCCL_QUICK_TESTS=""
 fi
 
@@ -215,9 +208,7 @@ RESULT=$(jq -n \
         runtime_error_count: ($errc | tonumber)
     }')
 
-echo "$RESULT" | emit_json "nccl-tests" "$status"
-log_ok "NCCL tests complete — peak all_reduce busbw: ${peak_busbw} GB/s"
-echo "$RESULT" | jq '{gpu_count, peak_allreduce_busbw_gbps, runtime_error_count}'
+finish_module "nccl-tests" "$status" "$RESULT" '{gpu_count, peak_allreduce_busbw_gbps, runtime_error_count}'
 if [ "$status" = "error" ]; then
     exit 1
 fi

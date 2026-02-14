@@ -5,12 +5,6 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== System Inventory ==="
 
-# Normalize potentially empty/non-numeric values for --argjson.
-to_json_int() {
-    local v="${1:-}"
-    [[ "$v" =~ ^[0-9]+$ ]] && printf '%s' "$v" || printf '0'
-}
-
 # ── CPU ──
 if has_cmd lscpu; then
     _lscpu_out=$(lscpu 2>/dev/null || true)
@@ -24,10 +18,10 @@ cpu_threads=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo
 cpu_arch=$(uname -m)
 numa_nodes=$(echo "$_lscpu_out" | awk -F: '/NUMA node\(s\)/ {gsub(/[ \t]/,"",$2); print $2}')
 cpu_flags=$(echo "$_lscpu_out" | awk -F: '/Flags/ {print $2}' | xargs)
-cpu_sockets_num=$(to_json_int "$cpu_sockets")
-cpu_cores_per_socket_num=$(to_json_int "$cpu_cores_per_socket")
-cpu_threads_num=$(to_json_int "$cpu_threads")
-numa_nodes_num=$(to_json_int "${numa_nodes:-1}")
+cpu_sockets_num=$(int_or_default "$cpu_sockets" 0)
+cpu_cores_per_socket_num=$(int_or_default "$cpu_cores_per_socket" 0)
+cpu_threads_num=$(int_or_default "$cpu_threads" 0)
+numa_nodes_num=$(int_or_default "${numa_nodes:-1}" 1)
 total_cores_num=$((cpu_sockets_num * cpu_cores_per_socket_num))
 
 cpu_json=$(jq -n \
@@ -61,7 +55,7 @@ elif has_cmd sysctl; then
 else
     total_mem_kb="0"
 fi
-total_mem_kb=$(to_json_int "$total_mem_kb")
+total_mem_kb=$(int_or_default "$total_mem_kb" 0)
 total_mem_gb=$(awk -v kb="$total_mem_kb" 'BEGIN { printf "%.1f", kb/1048576 }')
 
 # DIMM details via dmidecode (requires root)
@@ -94,8 +88,7 @@ if has_cmd dmidecode; then
             print "]"
         }
         ' 2>/dev/null) || true
-        # Validate JSON
-        echo "$dimm_json" | jq . >/dev/null 2>&1 || dimm_json="[]"
+        dimm_json=$(json_compact_or "$dimm_json" "[]")
     fi
     if [ "$dimm_json" = "[]" ] && ! is_root; then
         log_warn "dmidecode requires root for DIMM details — run as root for full inventory"
@@ -113,6 +106,7 @@ if has_cmd lsblk; then
 else
     storage_json="[]"
 fi
+storage_json=$(json_compact_or "$storage_json" "[]")
 
 # SMART data for each disk (requires root)
 smart_arr="[]"
@@ -123,9 +117,10 @@ if has_cmd smartctl; then
         echo "{\"device\":\"$dev\",\"health\":\"${health:-unknown}\",\"temp_c\":\"${temp:-unknown}\"}"
     done) || true
     if [ -n "$_smart_out" ]; then
-        smart_arr=$(echo "$_smart_out" | jq -s '.' 2>/dev/null) || smart_arr="[]"
+        smart_arr=$(printf '%s\n' "$_smart_out" | json_slurp_objects_or "[]")
     fi
 fi
+smart_arr=$(json_compact_or "$smart_arr" "[]")
 
 # ── OS / Kernel ──
 _hostname=$(hostname -f 2>/dev/null || hostname)
@@ -137,12 +132,13 @@ if [ -r /proc/uptime ]; then
 else
     _uptime="0"
 fi
-_uptime=$(to_json_int "$_uptime")
+_uptime=$(int_or_default "$_uptime" 0)
 if has_cmd ip; then
     _ips=$(ip -j addr show 2>/dev/null | jq '[.[] | select(.ifname != "lo") | {iface: .ifname, addrs: [.addr_info[] | .local]}]' 2>/dev/null || echo "[]")
 else
     _ips="[]"
 fi
+_ips=$(json_compact_or "$_ips" "[]")
 
 os_json=$(jq -n \
     --arg hostname "$_hostname" \
@@ -169,6 +165,4 @@ RESULT=$(jq -n \
     --argjson os "$os_json" \
     '{cpu: $cpu, ram: $ram, storage: {devices: $storage, smart: $smart}, os: $os}')
 
-echo "$RESULT" | emit_json "inventory" "ok"
-log_ok "Inventory complete"
-echo "$RESULT" | jq .
+finish_module "inventory" "ok" "$RESULT"

@@ -49,7 +49,7 @@ esac
 nvcc_ver="none"
 nvcc_path=""
 if has_cmd nvcc; then
-    nvcc_path=$(which nvcc)
+    nvcc_path=$(cmd_path nvcc)
 elif [ -x "${CUDA_HOME:-/nonexistent}/bin/nvcc" ]; then
     nvcc_path="${CUDA_HOME}/bin/nvcc"
 elif [ -x "/usr/local/cuda/bin/nvcc" ]; then
@@ -170,7 +170,7 @@ nvlink_json='{"available": false}'
 if has_cmd nvidia-smi; then
     nvlink_out=$(nvidia-smi nvlink --status 2>/dev/null || echo "")
     if [ -n "$nvlink_out" ] && ! echo "$nvlink_out" | grep -qi "not supported\|error"; then
-        link_count=$(echo "$nvlink_out" | grep -c "Link" || echo 0)
+        link_count=$(count_grep_re 'Link' "$nvlink_out")
         nvlink_json="{\"available\": true, \"total_links\": $link_count}"
     fi
 fi
@@ -202,7 +202,7 @@ for line in lines:
                 topo[gpu_name] = connections
 print(json.dumps(topo))
 " 2>/dev/null || echo "{}")
-        echo "$topology_json" | jq . >/dev/null 2>&1 || topology_json="{}"
+        topology_json=$(json_compact_or "$topology_json" "{}")
     fi
 fi
 
@@ -214,13 +214,9 @@ echo "$topology_json" | jq -e . >/dev/null 2>&1 || topology_json='{}'
 gpu_json=$(echo "$gpu_json" | jq -c . 2>/dev/null) || true
 echo "$gpu_json" | jq -e . >/dev/null 2>&1 || gpu_json='[]'
 
-TMP_GPU=$(mktemp -p "${HPC_WORK_DIR}" gpu_json.XXXXXX)
-TMP_NVL=$(mktemp -p "${HPC_WORK_DIR}" nvlink.XXXXXX)
-TMP_TOP=$(mktemp -p "${HPC_WORK_DIR}" topo.XXXXXX)
-printf '%s' "$gpu_json" > "$TMP_GPU"
-printf '%s' "$nvlink_json" > "$TMP_NVL"
-printf '%s' "$topology_json" > "$TMP_TOP"
-register_cleanup "$TMP_GPU" "$TMP_NVL" "$TMP_TOP"
+TMP_GPU=$(json_tmpfile "gpu_json" "$gpu_json" "[]")
+TMP_NVL=$(json_tmpfile "nvlink" "$nvlink_json" '{"available":false}')
+TMP_TOP=$(json_tmpfile "topo" "$topology_json" "{}")
 
 # ── Build result (sanitize string args for JSON safety) ──
 driver_ver=$(printf '%s' "$driver_ver" | tr -d '\000-\037')
@@ -248,7 +244,4 @@ RESULT=$(jq -n \
         note: (if $note != "" then $note else null end)
     }')
 
-echo "$RESULT" | emit_json "gpu-inventory" "ok"
-final_gpu_count=$(echo "$RESULT" | jq -r '.gpu_count // 0' 2>/dev/null || echo 0)
-log_ok "GPU inventory: ${final_gpu_count} GPUs found"
-echo "$RESULT" | jq '{gpu_count, driver_version, cuda_version, nvlink}'
+finish_module "gpu-inventory" "ok" "$RESULT" '{gpu_count, driver_version, cuda_version, nvlink}'

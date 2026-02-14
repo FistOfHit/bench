@@ -75,11 +75,15 @@ BEGIN { print "["; first=1 }
 }
 END { print "]" }
 ' 2>/dev/null || echo "[]")
+tests_json=$(json_compact_or "$tests_json" "[]")
 
 # Count results
 pass_count=$(echo "$tests_json" | jq '[.[] | select(.result=="PASS")] | length' 2>/dev/null || echo 0)
 fail_count=$(echo "$tests_json" | jq '[.[] | select(.result=="FAIL")] | length' 2>/dev/null || echo 0)
 warn_count=$(echo "$tests_json" | jq '[.[] | select(.result=="WARN")] | length' 2>/dev/null || echo 0)
+pass_count=$(int_or_default "${pass_count:-0}" 0)
+fail_count=$(int_or_default "${fail_count:-0}" 0)
+warn_count=$(int_or_default "${warn_count:-0}" 0)
 
 overall="pass"
 [ "$warn_count" -gt 0 ] && overall="warn"
@@ -103,6 +107,4 @@ RESULT=$(jq -n \
         raw_output: $raw
     }')
 
-echo "$RESULT" | emit_json "dcgm-diag" "$overall"
-log_ok "DCGM diag: $overall (P:$pass_count F:$fail_count W:$warn_count)"
-echo "$RESULT" | jq '{diag_level, overall, pass_count, fail_count, warn_count, tests}'
+finish_module "dcgm-diag" "$overall" "$RESULT" '{diag_level, overall, pass_count, fail_count, warn_count}'

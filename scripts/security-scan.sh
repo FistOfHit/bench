@@ -27,7 +27,7 @@ fi
 # ── Running services ──
 _svc_out=$(systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}') || true
 if [ -n "$_svc_out" ]; then
-    services_json=$(echo "$_svc_out" | jq -R . | jq -s '.') || services_json="[]"
+    services_json=$(printf '%s\n' "$_svc_out" | json_array_from_lines "[]")
 else
     services_json="[]"
 fi
@@ -37,7 +37,7 @@ fi
 # -xdev: don't cross filesystem boundaries; timeout: safety net
 _suid_out=$(timeout 30 find /usr /bin /sbin /opt /var -xdev -perm -4000 -type f 2>/dev/null | head -50) || true
 if [ -n "$_suid_out" ]; then
-    suid_json=$(echo "$_suid_out" | jq -R . | jq -s '.') || suid_json="[]"
+    suid_json=$(printf '%s\n' "$_suid_out" | json_array_from_lines "[]")
 else
     suid_json="[]"
 fi
@@ -57,18 +57,19 @@ kernel_params=$(jq -n \
 # ── Open ports (external-facing) ──
 _ports_out=$(ss -tulnp 2>/dev/null | awk 'NR>1 && $4 !~ /127\.0\.0/ && $4 !~ /::1/ && $4 !~ /\[::1\]/ {print $4}' | sort -u) || true
 if [ -n "$_ports_out" ]; then
-    open_ports=$(echo "$_ports_out" | jq -R . | jq -s '.') || open_ports="[]"
+    open_ports=$(printf '%s\n' "$_ports_out" | json_array_from_lines "[]")
 else
     open_ports="[]"
 fi
 
 # ── Assess ──
-status="pass"
+# Status uses suite-standard values: ok / warn / error / skipped
+status="ok"
 [ ${#warnings[@]} -gt 3 ] && status="warn"
-[ ${#warnings[@]} -gt 6 ] && status="fail"
+[ ${#warnings[@]} -gt 6 ] && status="error"
 
 if [ ${#warnings[@]} -gt 0 ]; then
-    warnings_json=$(printf '%s\n' "${warnings[@]}" | jq -R . | jq -s '.') || warnings_json="[]"
+    warnings_json=$(printf '%s\n' "${warnings[@]}" | json_array_from_lines "[]")
 else
     warnings_json="[]"
 fi
@@ -93,6 +94,4 @@ RESULT=$(jq -n \
         warnings: $warnings
     }')
 
-echo "$RESULT" | emit_json "security-scan" "$status"
-log_ok "Security scan: $status (${#warnings[@]} warnings)"
-echo "$RESULT" | jq '{status, warning_count: (.warnings|length), warnings, suid_count: .suid_binaries_count, service_count: .running_services_count}'
+finish_module "security-scan" "$status" "$RESULT" '{status, warning_count: (.warnings|length), warnings}'

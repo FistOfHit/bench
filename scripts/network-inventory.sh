@@ -13,6 +13,7 @@ nics_json=$(ip -j link show 2>/dev/null | jq '[.[] | select(.ifname != "lo") | {
     mtu: .mtu,
     type: .link_type
 }]' 2>/dev/null || echo "[]")
+nics_json=$(json_compact_or "$nics_json" "[]")
 
 # Enrich with ethtool speed
 nics_enriched=$(echo "$nics_json" | jq -c '.[]' | while read -r nic; do
@@ -20,10 +21,8 @@ nics_enriched=$(echo "$nics_json" | jq -c '.[]' | while read -r nic; do
     speed=$(ethtool "$ifname" 2>/dev/null | awk '/Speed:/ {print $2}' || echo "unknown")
     driver=$(ethtool -i "$ifname" 2>/dev/null | awk '/driver:/ {print $2}' || echo "unknown")
     echo "$nic" | jq --arg s "$speed" --arg d "$driver" '. + {speed: $s, driver: $d}'
-done | jq -s '.' 2>/dev/null || echo "$nics_json")
-if [ -z "${nics_enriched:-}" ] || ! echo "$nics_enriched" | jq . >/dev/null 2>&1; then
-    nics_enriched="$nics_json"
-fi
+done | json_slurp_objects_or "$nics_json")
+nics_enriched=$(json_compact_or "$nics_enriched" "$nics_json")
 
 # ── Bonding ──
 bond_json="[]"
@@ -33,7 +32,7 @@ if ls /proc/net/bonding/* 2>/dev/null | head -1 | grep -q .; then
         mode=$(awk '/Bonding Mode:/ {$1=$2=""; print substr($0,3)}' "$f")
         slaves=$(awk '/Slave Interface:/ {print $3}' "$f" | tr '\n' ',' | sed 's/,$//')
         echo "{\"name\":\"$name\",\"mode\":\"$mode\",\"slaves\":\"$slaves\"}"
-    done | jq -s '.' 2>/dev/null || echo "[]")
+    done | json_slurp_objects_or "[]")
 fi
 
 # ── InfiniBand ──
@@ -51,6 +50,7 @@ if has_cmd ibstat; then
     END { if(ca!="") { if(!first) printf ","; printf "{\"ca\":\"%s\",\"type\":\"%s\",\"ports\":%s,\"fw\":\"%s\",\"state\":\"%s\",\"rate\":\"%s\"}\n", ca, catype, numports, fw, state, rate }; print "]" }
     ' 2>/dev/null || echo "[]")
 fi
+ib_json=$(json_compact_or "$ib_json" "[]")
 
 # ── ibv_devinfo ──
 ibv_json="[]"
@@ -65,6 +65,7 @@ if has_cmd ibv_devinfo; then
     END { if(hca!="") { if(!first) printf ","; printf "{\"hca\":\"%s\",\"transport\":\"%s\",\"fw\":\"%s\",\"node_guid\":\"%s\"}\n", hca, transport, fw, guid }; print "]" }
     ' 2>/dev/null || echo "[]")
 fi
+ibv_json=$(json_compact_or "$ibv_json" "[]")
 
 # ── RoCE detection ──
 roce_detected=false
@@ -82,6 +83,4 @@ RESULT=$(jq -n \
     --argjson roce "$roce_detected" \
     '{nics: $nics, bonding: $bonds, infiniband: $ib, ibv_devices: $ibv, roce_detected: $roce}')
 
-echo "$RESULT" | emit_json "network-inventory" "ok"
-log_ok "Network inventory complete"
-echo "$RESULT" | jq .
+finish_module "network-inventory" "ok" "$RESULT"

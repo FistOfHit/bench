@@ -18,10 +18,9 @@ if [ -n "$_df_out" ]; then
     }
     END { print "]" }
     ') || mounts_json="[]"
-    echo "$mounts_json" | jq . >/dev/null 2>&1 || mounts_json="[]"
+    mounts_json=$(json_compact_or "$mounts_json" "[]")
 fi
-# Ensure valid JSON for --argjson (avoid exit on invalid)
-echo "$mounts_json" | jq . >/dev/null 2>&1 || mounts_json="[]"
+mounts_json=$(json_compact_or "$mounts_json" "[]")
 
 # ── Parallel/network filesystems ──
 pfs_json="[]"
@@ -44,7 +43,7 @@ if mount | grep -q beegfs; then
     pfs_found+=("beegfs")
 fi
 if [ ${#pfs_found[@]} -gt 0 ]; then
-    pfs_json=$(printf '%s\n' "${pfs_found[@]}" | jq -R . | jq -s '.') || pfs_json="[]"
+    pfs_json=$(printf '%s\n' "${pfs_found[@]}" | json_array_from_lines "[]")
 else
     pfs_json="[]"
 fi
@@ -52,12 +51,15 @@ fi
 # ── RAID ──
 raid_json="{}"
 if has_cmd mdadm; then
-    md_arrays=$(cat /proc/mdstat 2>/dev/null | grep -c "^md" || echo "0")
+    md_arrays=0
+    if [ -r /proc/mdstat ]; then
+        md_arrays=$(count_grep_re '^md' < /proc/mdstat)
+    fi
     md_detail=$(mdadm --detail --scan 2>/dev/null || echo "none")
     md_detail=$(printf '%s' "$md_detail" | tr -d '\000-\037"' | head -c 2000)
     raid_json=$(jq -n --arg n "$md_arrays" --arg d "$md_detail" '{type:"mdadm",arrays:($n|tonumber),detail:$d}' 2>/dev/null) || true
 fi
-echo "$raid_json" | jq . >/dev/null 2>&1 || raid_json='{}'
+raid_json=$(json_compact_or "$raid_json" "{}")
 if [ "$raid_json" = '{}' ] && has_cmd megacli; then
     raid_json=$(jq -n '{type:"megacli",detail:"present"}')
 elif [ "$raid_json" = '{}' ] && has_cmd storcli; then
@@ -72,19 +74,14 @@ if has_cmd lvs; then
         lvm_json=$(echo "$_lvs_out" | jq '.report[0].lv // []' 2>/dev/null) || true
     fi
 fi
-echo "$lvm_json" | jq . >/dev/null 2>&1 || lvm_json="[]"
-echo "$pfs_json" | jq . >/dev/null 2>&1 || pfs_json="[]"
+lvm_json=$(json_compact_or "$lvm_json" "[]")
+pfs_json=$(json_compact_or "$pfs_json" "[]")
 
 # Use temp files for large/embedded JSON to avoid arg length and escaping with --argjson
-_tmp_m=$(mktemp -p "${HPC_WORK_DIR}" fs_mounts.XXXXXX)
-_tmp_p=$(mktemp -p "${HPC_WORK_DIR}" fs_pfs.XXXXXX)
-_tmp_r=$(mktemp -p "${HPC_WORK_DIR}" fs_raid.XXXXXX)
-_tmp_l=$(mktemp -p "${HPC_WORK_DIR}" fs_lvm.XXXXXX)
-printf '%s' "$mounts_json" > "$_tmp_m"
-printf '%s' "$pfs_json" > "$_tmp_p"
-printf '%s' "$raid_json" > "$_tmp_r"
-printf '%s' "$lvm_json" > "$_tmp_l"
-register_cleanup "$_tmp_m" "$_tmp_p" "$_tmp_r" "$_tmp_l"
+_tmp_m=$(json_tmpfile "fs_mounts" "$mounts_json" "[]")
+_tmp_p=$(json_tmpfile "fs_pfs" "$pfs_json" "[]")
+_tmp_r=$(json_tmpfile "fs_raid" "$raid_json" "{}")
+_tmp_l=$(json_tmpfile "fs_lvm" "$lvm_json" "[]")
 
 RESULT=$(jq -n \
     --slurpfile mounts "$_tmp_m" \
@@ -93,6 +90,4 @@ RESULT=$(jq -n \
     --slurpfile lvm "$_tmp_l" \
     '{mounts: $mounts[0], parallel_filesystems: $pfs[0], raid: $raid[0], lvm: $lvm[0]}')
 
-echo "$RESULT" | emit_json "filesystem-diag" "ok"
-log_ok "Filesystem diagnostics complete"
-echo "$RESULT" | jq '{mount_count: (.mounts|length), parallel_fs: .parallel_filesystems, raid_type: .raid.type}'
+finish_module "filesystem-diag" "ok" "$RESULT" '{mount_count: (.mounts|length), parallel_fs: .parallel_filesystems, raid_type: .raid.type}'

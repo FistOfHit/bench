@@ -14,6 +14,7 @@ if has_cmd nvidia-smi && nvidia-smi >/dev/null 2>&1; then
     has_gpu_driver=true
     gpu_count_now=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l | tr -d '[:space:]')
 fi
+gpu_count_now=$(int_or_default "${gpu_count_now:-0}" 0)
 
 has_docker=false
 nvidia_runtime=false

@@ -26,12 +26,15 @@ if has_cmd nvidia-smi; then
     END { print "]" }
     ' 2>/dev/null || echo "[]")
 fi
+nvlink_json=$(json_compact_or "$nvlink_json" "[]")
 
 # ── NVSwitch detection ──
 nvswitch_count=0
 if has_cmd nvidia-smi; then
-    nvswitch_count=$(nvidia-smi nvswitch --count 2>/dev/null | grep -oP '\d+' | head -1 || echo 0)
+    # Avoid grep -P (not always available); take the first integer token.
+    nvswitch_count=$(nvidia-smi nvswitch --count 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+$/) {print $i; exit}}' || true)
 fi
+nvswitch_count=$(int_or_default "${nvswitch_count:-0}" 0)
 
 # ── lstopo ──
 lstopo_text=""
@@ -65,8 +68,9 @@ elif [ -d /sys/devices/system/node ]; then
         node=$(basename "$ndir" | sed 's/node//')
         cpus=$(cat "$ndir/cpulist" 2>/dev/null || echo "")
         echo "{\"node\":$node,\"cpus\":\"$cpus\"}"
-    done | jq -s '.' 2>/dev/null) || numa_json="[]"
+    done | json_slurp_objects_or "[]")
 fi
+numa_json=$(json_compact_or "$numa_json" "[]")
 
 # ── CPU-GPU affinity ──
 affinity_json="[]"
@@ -74,8 +78,9 @@ if has_cmd nvidia-smi; then
     affinity_json=$(nvidia-smi --query-gpu=index,pci.bus_id --format=csv,noheader 2>/dev/null | while IFS=', ' read -r idx bus; do
         numa_node=$(cat "/sys/bus/pci/devices/${bus,,}/numa_node" 2>/dev/null || echo "-1")
         echo "{\"gpu\":$idx,\"pci_bus\":\"$bus\",\"numa_node\":$numa_node}"
-    done | jq -s '.' 2>/dev/null || echo "[]")
+    done | json_slurp_objects_or "[]")
 fi
+affinity_json=$(json_compact_or "$affinity_json" "[]")
 
 # ── PCIe link details for GPUs ──
 pcie_json="[]"
@@ -89,6 +94,7 @@ if has_cmd nvidia-smi; then
     END { print "]" }
     ' 2>/dev/null || echo "[]")
 fi
+pcie_json=$(json_compact_or "$pcie_json" "[]")
 
 RESULT=$(jq -n \
     --arg topo "$topo_matrix" \
@@ -108,6 +114,4 @@ RESULT=$(jq -n \
         pcie_links: $pcie
     }')
 
-echo "$RESULT" | emit_json "topology" "ok"
-log_ok "Topology captured"
-echo "$RESULT" | jq .
+finish_module "topology" "ok" "$RESULT"

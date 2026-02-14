@@ -56,14 +56,14 @@ while [ $# -gt 0 ]; do
 done
 
 # Quick mode: short runs per module so suite finishes fast (smoke test / VM validation)
+# Defaults are in conf/defaults.sh.
 if [ "${HPC_QUICK:-0}" = "1" ]; then
-    MAX_MODULE_TIME=${MAX_MODULE_TIME:-600}   # 10 min per module in quick mode
+    MAX_MODULE_TIME=${MAX_MODULE_TIME:-${MAX_MODULE_TIME_QUICK:-600}}
 else
-    MAX_MODULE_TIME=${MAX_MODULE_TIME:-1800}  # 30 min per module
+    MAX_MODULE_TIME=${MAX_MODULE_TIME:-${MAX_MODULE_TIME_FULL:-1800}}
 fi
 if [ "${HPC_CI:-0}" = "1" ]; then
-    # Keep CI runs deterministic and reasonably fast.
-    MAX_MODULE_TIME=${MAX_MODULE_TIME:-600}
+    MAX_MODULE_TIME=${MAX_MODULE_TIME:-${MAX_MODULE_TIME_QUICK:-600}}
 fi
 
 # Read version from single source of truth
@@ -286,7 +286,7 @@ if [ "$HPC_IS_ROOT" -eq 0 ]; then
 fi
 
 # ═══════════════════════════════════════════
-# PHASE 0: Bootstrap (requires root)
+# PHASE 0: Bootstrap (manifest phase=0, requires root)
 # ═══════════════════════════════════════════
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 0: Bootstrap                  ║"
@@ -303,10 +303,10 @@ else
 fi
 
 # ═══════════════════════════════════════════
-# PHASE 0.5: Runtime Sanity (early fail-fast/auto-install checks)
+# PHASE 1: Runtime Sanity (manifest phase=1, early fail-fast/auto-install checks)
 # ═══════════════════════════════════════════
 log_info "╔══════════════════════════════════════╗"
-log_info "║  PHASE 0.5: Runtime Sanity           ║"
+log_info "║  PHASE 1: Runtime Sanity             ║"
 log_info "╚══════════════════════════════════════╝"
 run_module "${SCRIPT_DIR}/runtime-sanity.sh"
 if [ "${HPC_FAIL_FAST_RUNTIME:-0}" = "1" ] && \
@@ -318,7 +318,7 @@ if [ "${HPC_FAIL_FAST_RUNTIME:-0}" = "1" ] && \
 fi
 
 # ═══════════════════════════════════════════
-# PHASE 1: Discovery & Inventory (parallel)
+# PHASE 2: Discovery & Inventory (manifest phase=2, parallel)
 # ═══════════════════════════════════════════
 
 # ── GPU driver warmup ──
@@ -334,7 +334,7 @@ if has_cmd nvidia-smi; then
 fi
 
 log_info "╔══════════════════════════════════════╗"
-log_info "║  PHASE 1: Discovery & Inventory      ║"
+log_info "║  PHASE 2: Discovery & Inventory      ║"
 log_info "╚══════════════════════════════════════╝"
 mapfile -t PHASE1_SCRIPTS < <(manifest_phase_scripts 2 "$HPC_IS_ROOT")
 _phase1_pids=()
@@ -376,11 +376,11 @@ for i in "${!_phase1_pids[@]}"; do
 done
 
 # ═══════════════════════════════════════════
-# PHASE 2: Benchmarks (skipped in smoke mode)
+# PHASE 3: Benchmarks (manifest phase=3, skipped in smoke mode)
 # ═══════════════════════════════════════════
 if [ "${HPC_SMOKE:-0}" != "1" ]; then
 log_info "╔══════════════════════════════════════╗"
-log_info "║  PHASE 2: Benchmarks                 ║"
+log_info "║  PHASE 3: Benchmarks                 ║"
 log_info "╚══════════════════════════════════════╝"
 mapfile -t PHASE2_SCRIPTS < <(manifest_phase_scripts 3 "$HPC_IS_ROOT")
 for script in "${PHASE2_SCRIPTS[@]}"; do
@@ -389,11 +389,11 @@ done
 fi
 
 # ═══════════════════════════════════════════
-# PHASE 3: Diagnostics (skipped in smoke mode)
+# PHASE 4: Diagnostics (manifest phase=4, skipped in smoke mode)
 # ═══════════════════════════════════════════
 if [ "${HPC_SMOKE:-0}" != "1" ]; then
 log_info "╔══════════════════════════════════════╗"
-log_info "║  PHASE 3: Diagnostics                ║"
+log_info "║  PHASE 4: Diagnostics                ║"
 log_info "╚══════════════════════════════════════╝"
 mapfile -t PHASE3_SCRIPTS < <(manifest_phase_scripts 4 "$HPC_IS_ROOT")
 for script in "${PHASE3_SCRIPTS[@]}"; do
@@ -402,10 +402,10 @@ done
 fi
 
 # ═══════════════════════════════════════════
-# PHASE 4: Report Generation
+# PHASE 5: Report Generation (manifest phase=5)
 # ═══════════════════════════════════════════
 log_info "╔══════════════════════════════════════╗"
-log_info "║  PHASE 4: Report                     ║"
+log_info "║  PHASE 5: Report                     ║"
 log_info "╚══════════════════════════════════════╝"
 mapfile -t PHASE4_SCRIPTS < <(manifest_phase_scripts 5 "$HPC_IS_ROOT")
 for script in "${PHASE4_SCRIPTS[@]}"; do

@@ -10,12 +10,13 @@ require_gpu "gpu-burn" "no nvidia-smi"
 
 # Quick mode (HPC_QUICK=1): 10s burn to verify suite (≥10s needed for GFLOPS output);
 # VMs: shorter; else 5 min default. Override with GPU_BURN_DURATION.
+# Defaults are in conf/defaults.sh.
 if [ "${HPC_QUICK:-0}" = "1" ]; then
-    BURN_DURATION=${GPU_BURN_DURATION:-10}
+    BURN_DURATION=${GPU_BURN_DURATION:-${GPU_BURN_DURATION_QUICK}}
 elif is_virtualized; then
-    BURN_DURATION=${GPU_BURN_DURATION:-60}
+    BURN_DURATION=${GPU_BURN_DURATION:-${GPU_BURN_DURATION_VM}}
 else
-    BURN_DURATION=${GPU_BURN_DURATION:-300}  # 5 minutes default on bare metal
+    BURN_DURATION=${GPU_BURN_DURATION:-${GPU_BURN_DURATION_FULL}}
 fi
 BURN_DIR="${HPC_WORK_DIR}/gpu-burn"
 
@@ -87,7 +88,7 @@ post_temps=$(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,
 # gpu-burn signals errors with "FAULTY" per GPU. Count only gpu-burn's own output,
 # not our log wrapper lines (which contain [ERROR] etc.)
 # Reliable patterns: "GPU <N>(<desc>): FAULTY" or "GPU <N>: FAULTY"
-errors_found=$(echo "$burn_output" | grep -c "FAULTY" 2>/dev/null || echo 0)
+errors_found=$(count_grep_re 'FAULTY' "$burn_output")
 
 # gpu-burn prints "OK" or "FAULTY" per GPU in the final summary
 gpu_results=$(echo "$burn_output" | grep -E "GPU [0-9]+.*: (OK|FAULTY)" | tail -20)
@@ -114,12 +115,7 @@ gpu_gflops=$(echo "$burn_output" | awk '
         printf "{\"gpu\":%d,\"gflops\":%.1f,\"status\":\"%s\"},", gpu_idx, gflops, status
     }
 }' | sed 's/,$//' | awk '{print "["$0"]"}')
-# When no GPU line matched, awk outputs "[]" but sed can leave "[""]" — normalize to valid JSON
-# Normalize: ensure gpu_gflops is valid JSON array (empty pipeline → empty string)
-if [ -z "$gpu_gflops" ] || ! echo "$gpu_gflops" | jq -e 'type == "array"' >/dev/null 2>&1; then
-    gpu_gflops="[]"
-fi
-gpu_gflops=$(echo "$gpu_gflops" | jq -c . 2>/dev/null) || gpu_gflops="[]"
+gpu_gflops=$(json_compact_or "$gpu_gflops" "[]")
 
 # ── Fallback: extract GFLOPS from progress lines (newer gpu-burn format) ──
 # Newer gpu-burn emits progress lines like:
@@ -142,7 +138,7 @@ if [ "$gpu_gflops" = "[]" ]; then
     if [ -n "$last_progress_gflops" ]; then
         # Get GPU indices from the final summary ("GPU N: OK" / "GPU N: FAULTY")
         _gpu_idx_list=$(echo "$burn_output" | awk '/GPU [0-9]+: (OK|FAULTY)/ { match($0, /GPU ([0-9]+)/); print substr($0, RSTART+4, RLENGTH-4)+0 }')
-        _gpu_count=$(echo "$_gpu_idx_list" | grep -c . 2>/dev/null || echo 1)
+        _gpu_count=$(printf '%s\n' "$_gpu_idx_list" | awk 'NF{c++} END{print c}')
         [ "$_gpu_count" -lt 1 ] && _gpu_count=1
         _per_gpu=$(awk "BEGIN { printf \"%.1f\", $last_progress_gflops / $_gpu_count }")
         # Determine per-GPU status from final summary (FAULTY vs OK)
@@ -169,8 +165,7 @@ if [ "$gpu_gflops" = "[]" ]; then
             }
             END { printf "]" }
         ')
-        echo "$gpu_gflops" | jq . >/dev/null 2>&1 || gpu_gflops="[]"
-        gpu_gflops=$(echo "$gpu_gflops" | jq -c . 2>/dev/null) || gpu_gflops="[]"
+        gpu_gflops=$(json_compact_or "$gpu_gflops" "[]")
         log_info "GFLOPS from progress lines: ${last_progress_gflops} total (${_per_gpu}/GPU x ${_gpu_count})"
     fi
 fi
@@ -183,29 +178,18 @@ if [ -f "$TEMP_LOG" ] && [ "$(wc -l < "$TEMP_LOG")" -gt 1 ]; then
     max_power=$(awk -F, 'NR>1 && $4+0>0 {if($4>max[$2]) max[$2]=$4} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_power_w\":%.1f}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null) || true
 fi
 
-status="pass"
-echo "$burn_output" | grep -qi "FAULTY" && status="fail"
-[ "$burn_rc" -eq 137 ] && status="timeout"
+# Status uses suite-standard values: ok / warn / error / skipped
+status="ok"
+echo "$burn_output" | grep -qi "FAULTY" && status="error"
+[ "$burn_rc" -eq 137 ] && status="error"
 
-# Validate JSON arrays (avoid jq --argjson on invalid data)
-echo "$max_temps" | jq . >/dev/null 2>&1 || max_temps="[]"
-echo "$max_power" | jq . >/dev/null 2>&1 || max_power="[]"
-
-# Use --arg for errors so we don't require valid JSON number from shell
-case "$errors_found" in ''|*[!0-9]*) errors_found=0 ;; esac
+max_temps=$(json_compact_or "$max_temps" "[]")
+max_power=$(json_compact_or "$max_power" "[]")
 
 # Write JSON arrays to files to avoid --argjson with invalid/large payloads
-_tmp_mt=$(mktemp -p "${HPC_WORK_DIR}" gpu_burn_mt.XXXXXX)
-_tmp_mp=$(mktemp -p "${HPC_WORK_DIR}" gpu_burn_mp.XXXXXX)
-_tmp_gf=$(mktemp -p "${HPC_WORK_DIR}" gpu_burn_gf.XXXXXX)
-printf '%s' "${max_temps:-[]}" > "$_tmp_mt"
-printf '%s' "${max_power:-[]}" > "$_tmp_mp"
-printf '%s' "${gpu_gflops:-[]}" > "$_tmp_gf"
-register_cleanup "$_tmp_mt" "$_tmp_mp" "$_tmp_gf"
-# Ensure files contain valid JSON for slurpfile
-for _f in "$_tmp_mt" "$_tmp_mp" "$_tmp_gf"; do
-    jq -c . < "$_f" > "${_f}.v" 2>/dev/null && mv "${_f}.v" "$_f" || printf '%s' "[]" > "$_f"
-done
+_tmp_mt=$(json_tmpfile "gpu_burn_mt" "${max_temps:-[]}" "[]")
+_tmp_mp=$(json_tmpfile "gpu_burn_mp" "${max_power:-[]}" "[]")
+_tmp_gf=$(json_tmpfile "gpu_burn_gf" "${gpu_gflops:-[]}" "[]")
 
 RESULT=$(jq -n \
     --arg dur "$BURN_DURATION" \
@@ -231,6 +215,4 @@ RESULT=$(jq -n \
         raw_output: ($raw_output | split("\n") | map(select(length > 0)))
     }')
 
-echo "$RESULT" | emit_json "gpu-burn" "$status"
-log_ok "GPU burn: $status (errors: $errors_found)"
-echo "$RESULT" | jq '{status, gpu_performance, errors_detected}'
+finish_module "gpu-burn" "$status" "$RESULT" '{status, gpu_performance, errors_detected}'
