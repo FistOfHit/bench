@@ -11,6 +11,16 @@ SCRIPT_NAME="run-all"
 source "$(dirname "$0")/../lib/common.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MODULES_MANIFEST="${HPC_BENCH_ROOT}/specs/modules.json"
+
+if ! has_cmd jq; then
+    echo "FATAL: jq is required to run hpc-bench." >&2
+    exit 1
+fi
+if [ ! -f "$MODULES_MANIFEST" ]; then
+    echo "FATAL: module manifest missing: $MODULES_MANIFEST" >&2
+    exit 1
+fi
 
 # Parse flags
 HPC_SMOKE=0
@@ -124,44 +134,47 @@ get_skip_reason() {
     fi
 }
 
+# Manifest helpers
+manifest_phase_scripts() {
+    local phase="$1"
+    local is_root="$2"
+    jq -r --argjson phase "$phase" --argjson is_root "$is_root" '
+        .modules
+        | map(select(.phase == $phase))
+        | map(select((.requires_root // false) | not or $is_root))
+        | sort_by(.order)
+        | .[].script
+    ' "$MODULES_MANIFEST" 2>/dev/null
+}
+
+manifest_required_cmds() {
+    local name="$1"
+    jq -r --arg n "$name" '
+        (.modules[]? | select(.name == $n) | .required_cmds[]?) // empty
+    ' "$MODULES_MANIFEST" 2>/dev/null
+}
+
 module_required_cmds() {
     local name="$1"
-    case "$name" in
-        bootstrap) echo "jq awk grep" ;;
-        runtime-sanity) echo "jq" ;;
-        inventory) echo "jq awk" ;;
-        gpu-inventory) echo "jq python3" ;;
-        topology) echo "jq awk" ;;
-        network-inventory) echo "jq awk" ;;
-        bmc-inventory) echo "jq awk" ;;
-        software-audit) echo "jq awk grep" ;;
-        dcgm-diag) echo "jq timeout" ;;
-        gpu-burn) echo "jq timeout awk" ;;
-        nccl-tests) echo "jq timeout awk" ;;
-        nvbandwidth) echo "jq timeout python3" ;;
-        stream-bench) echo "jq timeout awk" ;;
-        storage-bench) echo "jq timeout" ;;
-        hpl-cpu) echo "jq timeout awk" ;;
-        hpl-mxp) echo "jq timeout awk" ;;
-        ib-tests) echo "jq timeout awk" ;;
-        network-diag) echo "jq awk" ;;
-        filesystem-diag) echo "jq awk" ;;
-        thermal-power) echo "jq awk" ;;
-        security-scan) echo "jq awk grep" ;;
-        report) echo "jq awk" ;;
-        *) echo "jq" ;;
-    esac
+    local -a cmds=()
+    mapfile -t cmds < <(manifest_required_cmds "$name")
+    if [ "${#cmds[@]}" -eq 0 ]; then
+        printf '%s\n' jq
+        return 0
+    fi
+    printf '%s\n' "${cmds[@]}"
 }
 
 module_missing_cmds() {
     local name="$1"
-    local req
     local missing=()
-    for req in $(module_required_cmds "$name"); do
+    local req
+    while IFS= read -r req; do
+        [ -z "$req" ] && continue
         if ! has_cmd "$req"; then
             missing+=("$req")
         fi
-    done
+    done < <(module_required_cmds "$name")
     if [ "${#missing[@]}" -gt 0 ]; then
         local IFS=","
         echo "${missing[*]}"
@@ -176,9 +189,69 @@ skip_module_due_prereq() {
     jq -n --arg r "$reason" '{skip_reason: $r}' | emit_json "$name" "skipped" 2>/dev/null || true
 }
 
+_ci_tail_snippet() {
+    local name="$1"
+    if [ "${HPC_CI:-0}" = "1" ]; then
+        log_error "[$name] tail log snippet:"
+        tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
+    fi
+}
+
+# Record result for a module execution (shared by sequential + parallel phase 1).
+record_module_result() {
+    local name="$1" rc="$2" mod_duration="$3"
+
+    if [ "$rc" -eq 0 ]; then
+        # Module can exit 0 but still emit "skipped".
+        if [ -f "${HPC_RESULTS_DIR}/${name}.json" ] && jq -e '.status == "skipped"' "${HPC_RESULTS_DIR}/${name}.json" &>/dev/null; then
+            local reason
+            reason="$(get_skip_reason "$name")"
+            if [ -n "$reason" ]; then
+                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s): $reason"
+            else
+                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s)"
+            fi
+            SKIPPED=$((SKIPPED + 1))
+            log_warn "[$name] SKIPPED (${mod_duration}s)"
+        else
+            MODULE_STATUS[$name]="OK (${mod_duration}s)"
+            PASSED=$((PASSED + 1))
+            log_ok "[$name] OK (${mod_duration}s)"
+        fi
+        return 0
+    fi
+
+    if [ "$rc" -eq 137 ]; then
+        MODULE_STATUS[$name]="TIMEOUT (${MAX_MODULE_TIME}s limit)"
+        FAILED=$((FAILED + 1))
+        log_error "[$name] TIMEOUT after ${MAX_MODULE_TIME}s"
+        _ci_tail_snippet "$name"
+        return 0
+    fi
+
+    MODULE_STATUS[$name]="FAILED rc=$rc (${mod_duration}s)"
+    FAILED=$((FAILED + 1))
+    log_error "[$name] FAILED with rc=$rc (${mod_duration}s)"
+    _ci_tail_snippet "$name"
+    return 0
+}
+
+run_module_command() {
+    local script="$1" name="$2"
+
+    if [ "${HPC_CI:-0}" = "1" ]; then
+        timeout "$MAX_MODULE_TIME" bash "$script" >> "${HPC_LOG_DIR}/${name}-stdout.log" 2>&1
+        return $?
+    fi
+
+    timeout "$MAX_MODULE_TIME" bash "$script" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
+    return ${PIPESTATUS[0]:-$?}
+}
+
 run_module() {
     local script="$1"
-    local name=$(basename "$script" .sh)
+    local name
+    name="$(basename "$script" .sh)"
     TOTAL=$((TOTAL + 1))
 
     echo ""
@@ -196,52 +269,13 @@ run_module() {
 
     # Disable errexit/pipefail so a module failure doesn't kill the orchestrator
     set +eo pipefail
-    if [ "${HPC_CI:-0}" = "1" ]; then
-        timeout "$MAX_MODULE_TIME" bash "$script" >> "${HPC_LOG_DIR}/${name}-stdout.log" 2>&1
-        local rc=$?
-    else
-        timeout "$MAX_MODULE_TIME" bash "$script" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
-        local rc=${PIPESTATUS[0]:-$?}
-    fi
+    run_module_command "$script" "$name"
+    local rc=$?
     set -eo pipefail
 
     local mod_end=$(date +%s)
     local mod_duration=$((mod_end - mod_start))
-
-    if [ $rc -eq 0 ]; then
-        # Check if module emitted "skipped" status
-        if [ -f "${HPC_RESULTS_DIR}/${name}.json" ] && jq -e '.status == "skipped"' "${HPC_RESULTS_DIR}/${name}.json" &>/dev/null; then
-            local reason
-            reason=$(get_skip_reason "$name")
-            if [ -n "$reason" ]; then
-                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s): $reason"
-            else
-                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s)"
-            fi
-            SKIPPED=$((SKIPPED + 1))
-            log_warn "[$name] SKIPPED (${mod_duration}s)"
-        else
-            MODULE_STATUS[$name]="OK (${mod_duration}s)"
-            PASSED=$((PASSED + 1))
-            log_ok "[$name] OK (${mod_duration}s)"
-        fi
-    elif [ $rc -eq 137 ]; then
-        MODULE_STATUS[$name]="TIMEOUT (${MAX_MODULE_TIME}s limit)"
-        FAILED=$((FAILED + 1))
-        log_error "[$name] TIMEOUT after ${MAX_MODULE_TIME}s"
-        if [ "${HPC_CI:-0}" = "1" ]; then
-            log_error "[$name] tail log snippet:"
-            tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
-        fi
-    else
-        MODULE_STATUS[$name]="FAILED rc=$rc (${mod_duration}s)"
-        FAILED=$((FAILED + 1))
-        log_error "[$name] FAILED with rc=$rc (${mod_duration}s)"
-        if [ "${HPC_CI:-0}" = "1" ]; then
-            log_error "[$name] tail log snippet:"
-            tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
-        fi
-    fi
+    record_module_result "$name" "$rc" "$mod_duration"
 }
 
 # ── User-level mode: when not root, skip root-only modules ──
@@ -302,8 +336,7 @@ fi
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 1: Discovery & Inventory      ║"
 log_info "╚══════════════════════════════════════╝"
-PHASE1_SCRIPTS=(inventory.sh gpu-inventory.sh topology.sh network-inventory.sh software-audit.sh)
-[ "$HPC_IS_ROOT" -eq 1 ] && PHASE1_SCRIPTS=(inventory.sh gpu-inventory.sh topology.sh network-inventory.sh bmc-inventory.sh software-audit.sh)
+mapfile -t PHASE1_SCRIPTS < <(manifest_phase_scripts 2 "$HPC_IS_ROOT")
 _phase1_pids=()
 _phase1_names=()
 for script in "${PHASE1_SCRIPTS[@]}"; do
@@ -322,13 +355,8 @@ for script in "${PHASE1_SCRIPTS[@]}"; do
     (
         set +eo pipefail
         mod_start=$(date +%s)
-        if [ "${HPC_CI:-0}" = "1" ]; then
-            timeout "$MAX_MODULE_TIME" bash "${SCRIPT_DIR}/${script}" >> "${HPC_LOG_DIR}/${name}-stdout.log" 2>&1
-            rc=$?
-        else
-            timeout "$MAX_MODULE_TIME" bash "${SCRIPT_DIR}/${script}" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
-            rc=${PIPESTATUS[0]:-$?}
-        fi
+        run_module_command "${SCRIPT_DIR}/${script}" "$name"
+        rc=$?
         mod_end=$(date +%s)
         echo "$rc $((mod_end - mod_start))" > "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
     ) &
@@ -344,38 +372,7 @@ for i in "${!_phase1_pids[@]}"; do
         read -r rc mod_duration < "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
         rm -f "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
     fi
-    if [ "$rc" -eq 0 ]; then
-        if [ -f "${HPC_RESULTS_DIR}/${name}.json" ] && jq -e '.status == "skipped"' "${HPC_RESULTS_DIR}/${name}.json" &>/dev/null; then
-            reason=$(get_skip_reason "$name")
-            if [ -n "$reason" ]; then
-                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s): $reason"
-            else
-                MODULE_STATUS[$name]="SKIPPED (${mod_duration}s)"
-            fi
-            SKIPPED=$((SKIPPED + 1))
-            log_warn "[$name] SKIPPED (${mod_duration}s)"
-        else
-            MODULE_STATUS[$name]="OK (${mod_duration}s)"
-            PASSED=$((PASSED + 1))
-            log_ok "[$name] OK (${mod_duration}s)"
-        fi
-    elif [ "$rc" -eq 137 ]; then
-        MODULE_STATUS[$name]="TIMEOUT (${MAX_MODULE_TIME}s limit)"
-        FAILED=$((FAILED + 1))
-        log_error "[$name] TIMEOUT after ${MAX_MODULE_TIME}s"
-        if [ "${HPC_CI:-0}" = "1" ]; then
-            log_error "[$name] tail log snippet:"
-            tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
-        fi
-    else
-        MODULE_STATUS[$name]="FAILED rc=$rc (${mod_duration}s)"
-        FAILED=$((FAILED + 1))
-        log_error "[$name] FAILED with rc=$rc (${mod_duration}s)"
-        if [ "${HPC_CI:-0}" = "1" ]; then
-            log_error "[$name] tail log snippet:"
-            tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
-        fi
-    fi
+    record_module_result "$name" "$rc" "$mod_duration"
 done
 
 # ═══════════════════════════════════════════
@@ -385,7 +382,8 @@ if [ "${HPC_SMOKE:-0}" != "1" ]; then
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 2: Benchmarks                 ║"
 log_info "╚══════════════════════════════════════╝"
-for script in dcgm-diag.sh gpu-burn.sh nccl-tests.sh nvbandwidth.sh stream-bench.sh storage-bench.sh hpl-cpu.sh hpl-mxp.sh ib-tests.sh; do
+mapfile -t PHASE2_SCRIPTS < <(manifest_phase_scripts 3 "$HPC_IS_ROOT")
+for script in "${PHASE2_SCRIPTS[@]}"; do
     run_module "${SCRIPT_DIR}/${script}"
 done
 fi
@@ -397,7 +395,8 @@ if [ "${HPC_SMOKE:-0}" != "1" ]; then
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 3: Diagnostics                ║"
 log_info "╚══════════════════════════════════════╝"
-for script in network-diag.sh filesystem-diag.sh thermal-power.sh security-scan.sh; do
+mapfile -t PHASE3_SCRIPTS < <(manifest_phase_scripts 4 "$HPC_IS_ROOT")
+for script in "${PHASE3_SCRIPTS[@]}"; do
     run_module "${SCRIPT_DIR}/${script}"
 done
 fi
@@ -408,7 +407,10 @@ fi
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 4: Report                     ║"
 log_info "╚══════════════════════════════════════╝"
-run_module "${SCRIPT_DIR}/report.sh"
+mapfile -t PHASE4_SCRIPTS < <(manifest_phase_scripts 5 "$HPC_IS_ROOT")
+for script in "${PHASE4_SCRIPTS[@]}"; do
+    run_module "${SCRIPT_DIR}/${script}"
+done
 
 # ═══════════════════════════════════════════
 # Summary — Progressive output: device result → checklist → details
@@ -434,7 +436,7 @@ echo ""
 # 2) Checklist (compact)
 echo "  CHECKLIST  ($PASSED passed, $FAILED failed, $SKIPPED skipped)"
 echo "  ─────────────────────────────────────────────────────────────"
-for name in $(echo "${!MODULE_STATUS[@]}" | tr ' ' '\n' | sort); do
+for name in $(printf '%s\n' "${!MODULE_STATUS[@]}" | sort); do
     status="${MODULE_STATUS[$name]}"
     if [[ "$status" == OK* ]]; then
         symbol="✓"
@@ -450,13 +452,13 @@ echo ""
 
 # 3) Detail: passed vs failed/skipped
 echo "  PASSED:"
-for name in $(echo "${!MODULE_STATUS[@]}" | tr ' ' '\n' | sort); do
+for name in $(printf '%s\n' "${!MODULE_STATUS[@]}" | sort); do
     status="${MODULE_STATUS[$name]}"
     [[ "$status" == OK* ]] && printf "    • %s — %s\n" "$name" "$status"
 done
 echo ""
 echo "  FAILED / SKIPPED:"
-for name in $(echo "${!MODULE_STATUS[@]}" | tr ' ' '\n' | sort); do
+for name in $(printf '%s\n' "${!MODULE_STATUS[@]}" | sort); do
     status="${MODULE_STATUS[$name]}"
     [[ "$status" != OK* ]] && printf "    • %s — %s\n" "$name" "$status"
 done

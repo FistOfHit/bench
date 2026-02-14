@@ -90,7 +90,7 @@ Results go to `/var/log/hpc-bench/results/` by default when run as root (overrid
 **All results and logs live in one folder.** Default path: `/var/log/hpc-bench/results/`.
 
 | What you want | Where to look |
-|---------------|----------------|
+| ------------- | -------------- |
 | **Quick summary** — human-readable report | **`report.md`** (at the root of the results folder). Open this first for pass/fail, scores, and key numbers. |
 | **Per-module JSON** — machine-readable results | One file per module: `bootstrap.json`, `gpu-burn.json`, `dcgm-diag.json`, `run-all.json`, etc., in the same folder. |
 | **Logs** — if you need to debug or inspect stdout | **`logs/`** subfolder: e.g. `logs/gpu-burn-stdout.log`, `logs/dcgm-diag.log`, `logs/fio-seq-read.log`. |
@@ -142,7 +142,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 ## Environment variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| -------- | ------- | ----------- |
 | `HPC_BENCH_ROOT` | Script-derived | Root directory of the suite |
 | `HPC_RESULTS_DIR` | `/var/log/hpc-bench/results` | Where JSON results and report are written |
 | `HPC_LOG_DIR` | `$HPC_RESULTS_DIR/logs` | Module log files |
@@ -158,7 +158,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 
 ## Repository layout
 
-```
+```text
 ├── VERSION              # Single source of truth for version (e.g. 1.4)
 ├── README.md            # This file
 ├── .pre-commit-config.yaml   # Optional lint/pre-commit hooks
@@ -198,6 +198,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 ## Linting and pre-commit
 
 Optional: run [pre-commit](https://pre-commit.com/) to enforce trailing-whitespace removal, end-of-file newlines, YAML/JSON checks, and [ShellCheck](https://www.shellcheck.net/) on shell scripts.
+This repo also includes [shfmt](https://github.com/mvdan/sh) via pre-commit to keep shell formatting consistent.
 
 ```bash
 pipx install pre-commit   # or: python3 -m venv .venv && source .venv/bin/activate && pip install pre-commit
@@ -206,6 +207,13 @@ pre-commit run --all-files   # run once on entire repo
 ```
 
 Config: [.pre-commit-config.yaml](.pre-commit-config.yaml). ShellCheck is skipped for `src/` (C/CUDA build trees).
+
+If you prefer a `make` entrypoint (Linux only):
+
+```bash
+make lint
+make static-checks
+```
 
 ## CI
 

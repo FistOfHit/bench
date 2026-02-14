@@ -1,0 +1,161 @@
+{
+    "modules": [
+        {
+            "name": "bootstrap",
+            "script": "bootstrap.sh",
+            "phase": 0,
+            "order": 0,
+            "requires_root": true,
+            "required_cmds": ["jq", "awk", "grep"]
+        },
+        {
+            "name": "runtime-sanity",
+            "script": "runtime-sanity.sh",
+            "phase": 1,
+            "order": 10,
+            "required_cmds": ["jq"]
+        },
+        {
+            "name": "inventory",
+            "script": "inventory.sh",
+            "phase": 2,
+            "order": 20,
+            "required_cmds": ["jq", "awk"]
+        },
+        {
+            "name": "gpu-inventory",
+            "script": "gpu-inventory.sh",
+            "phase": 2,
+            "order": 21,
+            "required_cmds": ["jq", "python3"]
+        },
+        {
+            "name": "topology",
+            "script": "topology.sh",
+            "phase": 2,
+            "order": 22,
+            "required_cmds": ["jq", "awk"]
+        },
+        {
+            "name": "network-inventory",
+            "script": "network-inventory.sh",
+            "phase": 2,
+            "order": 23,
+            "required_cmds": ["jq", "awk"]
+        },
+        {
+            "name": "bmc-inventory",
+            "script": "bmc-inventory.sh",
+            "phase": 2,
+            "order": 24,
+            "requires_root": true,
+            "required_cmds": ["jq", "awk"]
+        },
+        {
+            "name": "software-audit",
+            "script": "software-audit.sh",
+            "phase": 2,
+            "order": 25,
+            "required_cmds": ["jq", "awk", "grep"]
+        },
+        {
+            "name": "dcgm-diag",
+            "script": "dcgm-diag.sh",
+            "phase": 3,
+            "order": 30,
+            "required_cmds": ["jq", "timeout"]
+        },
+        {
+            "name": "gpu-burn",
+            "script": "gpu-burn.sh",
+            "phase": 3,
+            "order": 31,
+            "required_cmds": ["jq", "timeout", "awk"]
+        },
+        {
+            "name": "nccl-tests",
+            "script": "nccl-tests.sh",
+            "phase": 3,
+            "order": 32,
+            "required_cmds": ["jq", "timeout", "awk"]
+        },
+        {
+            "name": "nvbandwidth",
+            "script": "nvbandwidth.sh",
+            "phase": 3,
+            "order": 33,
+            "required_cmds": ["jq", "timeout", "python3"]
+        },
+        {
+            "name": "stream-bench",
+            "script": "stream-bench.sh",
+            "phase": 3,
+            "order": 34,
+            "required_cmds": ["jq", "timeout", "awk"]
+        },
+        {
+            "name": "storage-bench",
+            "script": "storage-bench.sh",
+            "phase": 3,
+            "order": 35,
+            "required_cmds": ["jq", "timeout"]
+        },
+        {
+            "name": "hpl-cpu",
+            "script": "hpl-cpu.sh",
+            "phase": 3,
+            "order": 36,
+            "required_cmds": ["jq", "timeout", "awk"]
+        },
+        {
+            "name": "hpl-mxp",
+            "script": "hpl-mxp.sh",
+            "phase": 3,
+            "order": 37,
+            "required_cmds": ["jq", "timeout", "awk"]
+        },
+        {
+            "name": "ib-tests",
+            "script": "ib-tests.sh",
+            "phase": 3,
+            "order": 38,
+            "required_cmds": ["jq", "timeout", "awk"]
+        },
+        {
+            "name": "network-diag",
+            "script": "network-diag.sh",
+            "phase": 4,
+            "order": 40,
+            "required_cmds": ["jq", "awk"]
+        },
+        {
+            "name": "filesystem-diag",
+            "script": "filesystem-diag.sh",
+            "phase": 4,
+            "order": 41,
+            "required_cmds": ["jq", "awk"]
+        },
+        {
+            "name": "thermal-power",
+            "script": "thermal-power.sh",
+            "phase": 4,
+            "order": 42,
+            "required_cmds": ["jq", "awk"]
+        },
+        {
+            "name": "security-scan",
+            "script": "security-scan.sh",
+            "phase": 4,
+            "order": 43,
+            "required_cmds": ["jq", "awk", "grep"]
+        },
+        {
+            "name": "report",
+            "script": "report.sh",
+            "phase": 5,
+            "order": 50,
+            "required_cmds": ["jq", "awk"]
+        }
+    ]
+}
+

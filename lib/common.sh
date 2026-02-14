@@ -70,7 +70,7 @@ emit_json() {
 emit_json_safe() {
     local module="$1" status="$2"
     local input
-    input=$(cat)
+    input=$(</dev/stdin)
     if ! echo "$input" | jq . >/dev/null 2>&1; then
         log_error "Invalid JSON for module $module — writing error record"
         jq -n --arg m "$module" --arg e "Invalid JSON output" \

@@ -32,7 +32,10 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
     # Find CUDA path
     CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
     if [ ! -d "$CUDA_HOME" ]; then
-        CUDA_HOME=$(dirname $(dirname $(which nvcc 2>/dev/null))) 2>/dev/null || true
+        nvcc_path="$(command -v nvcc 2>/dev/null || true)"
+        if [ -n "$nvcc_path" ]; then
+            CUDA_HOME="$(dirname "$(dirname "$nvcc_path")")"
+        fi
     fi
 
     # Prefer bundled source for repeatability; fallback to online clone.
@@ -172,7 +175,9 @@ first=true
 for test in $NCCL_TEST_LIST; do
     result=$(run_nccl_test "$test")
     if [ -n "$result" ] && [ "$result" != "" ]; then
-        $first || tests_output+=","
+        if [ "$first" = false ]; then
+            tests_output+=","
+        fi
         first=false
         tests_output+="$result"
     fi
