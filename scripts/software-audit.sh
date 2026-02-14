@@ -92,10 +92,12 @@ fi
 
 # ── Fabric Manager ──
 fm_status="none"
-if systemctl is-active nvidia-fabricmanager &>/dev/null; then
-    fm_status="active"
-elif systemctl list-unit-files | grep -q nvidia-fabricmanager; then
-    fm_status="installed-inactive"
+if has_cmd systemctl; then
+    if systemctl is-active nvidia-fabricmanager &>/dev/null; then
+        fm_status="active"
+    elif systemctl list-unit-files 2>/dev/null | grep -q nvidia-fabricmanager; then
+        fm_status="installed-inactive"
+    fi
 fi
 
 # ── GDRCopy ──

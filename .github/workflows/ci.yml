@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    name: Static Checks (bash + pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run static checks
+        run: bash scripts/ci-static-checks.sh
+
+  vm-smoke-quick:
+    name: Ubuntu VM (smoke + quick)
+    runs-on: ubuntu-latest
+    needs: static-checks
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl dmidecode fio iproute2 lshw util-linux ethtool hwloc pciutils numactl smartmontools
+
+      - name: Run smoke in CI mode
+        run: sudo bash scripts/run-all.sh --smoke --ci
+
+      - name: Run quick in CI mode
+        run: sudo bash scripts/run-all.sh --quick --ci
+
+      - name: Upload results archive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hpc-bench-results-ubuntu-vm
+          path: /var/log/hpc-bench/results
+          if-no-files-found: warn
+
+  gpu-quick-self-hosted:
+    name: GPU Host Quick (self-hosted)
+    runs-on: [self-hosted, linux, x64, gpu, nvidia]
+    needs: static-checks
+    if: ${{ vars.HPC_ENABLE_GPU_CI == '1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run quick on GPU host
+        run: sudo bash scripts/run-all.sh --quick --ci
+
+      - name: Upload GPU results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hpc-bench-results-gpu-host
+          path: /var/log/hpc-bench/results
+          if-no-files-found: warn

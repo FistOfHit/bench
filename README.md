@@ -2,7 +2,7 @@
 
 A comprehensive benchmarking and diagnostics suite for high-performance computing (HPC) systems. Runs hardware discovery, GPU/CPU/network/storage benchmarks, and produces structured JSON results plus a markdown report.
 
-**Version:** 1.9 (see [VERSION](VERSION))
+**Version:** 1.10 (see [VERSION](VERSION))
 
 ## Features
 
@@ -52,6 +52,9 @@ sudo bash scripts/run-all.sh --quick
 
 # Or smoke mode (bootstrap + inventory + report only, no benchmarks; under ~1 min):
 sudo bash scripts/run-all.sh --smoke
+
+# CI-friendly mode (implies quick mode, compacts module stdout, emits failure snippets):
+sudo bash scripts/run-all.sh --ci
 
 # Runtime sanity controls:
 # - auto-install runtime if missing (Docker + NVIDIA container runtime)
@@ -148,6 +151,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 | `HPC_KEEP_TOOLS` | `0` | Set to `1` to keep gpu-burn, nccl-tests, STREAM builds in work dir; subsequent runs skip rebuilds (faster iteration). |
 | `HPC_QUICK` | *(unset)* | Set to `1` or use `run-all.sh --quick` for quick benchmark mode: short runs (DCGM r1 only, 3s GPU burn, tiny HPL, short NCCL/STREAM/fio) to verify the suite end-to-end |
 | `HPC_SMOKE` | *(unset)* | Set by `run-all.sh --smoke`: run only bootstrap, discovery/inventory, and report (no benchmarks); under ~1 min for “did it install and detect?” |
+| `HPC_CI` | `0` | Set to `1` or use `run-all.sh --ci` for CI mode (enables quick-mode defaults, reduces interleaved stdout noise, prints log snippets on failure). |
 | `HPC_AUTO_INSTALL_CONTAINER_RUNTIME` | `0` | Set to `1` to let `run-all.sh` auto-run `bootstrap.sh --install-nvidia-container-toolkit` during early runtime sanity if GPU is present but NVIDIA container runtime is missing (requires root + internet). |
 | `HPC_FAIL_FAST_RUNTIME` | `0` | Set to `1` to make early runtime sanity fail immediately when GPU driver is present but NVIDIA container runtime is missing. |
 | `HPC_HPL_MXP_VM_STRICT` | `0` | Set to `1` to disable VM auto-skip conversion in `hpl-mxp.sh`; VM-specific container failures (e.g., SIGPIPE/no usable output) are treated as hard errors. |
@@ -203,9 +207,16 @@ pre-commit run --all-files   # run once on entire repo
 
 Config: [.pre-commit-config.yaml](.pre-commit-config.yaml). ShellCheck is skipped for `src/` (C/CUDA build trees).
 
+## CI
+
+- GitHub Actions workflow: `.github/workflows/ci.yml`
+- Static gate runs `scripts/ci-static-checks.sh` (`bash -n` + `pre-commit run --all-files`)
+- Ubuntu VM job runs `run-all.sh --smoke --ci` and `run-all.sh --quick --ci`
+- Optional GPU job runs on self-hosted runners labeled `self-hosted,linux,x64,gpu,nvidia` and is enabled by repo variable `HPC_ENABLE_GPU_CI=1`
+
 ## Concurrency and locking
 
-`run-all.sh` uses an exclusive lock file at `$HPC_RESULTS_DIR/.hpc-bench.lock`. If another run is in progress, it exits immediately with **exit code 2** (another instance is running). Do not remove the lock file unless you have confirmed no other `run-all.sh` is still running (e.g. check `ps` or ask other users). If the lock is stale (e.g. after a crash), you can remove it: `rm $HPC_RESULTS_DIR/.hpc-bench.lock`.
+`run-all.sh` uses an exclusive lock file at `$HPC_RESULTS_DIR/.hpc-bench.lock` (and falls back to lock directory `$HPC_RESULTS_DIR/.hpc-bench.lock.d` when `flock` is unavailable). If another run is in progress, it exits immediately with **exit code 2** (another instance is running). Remove stale lock artifacts only after confirming no other `run-all.sh` is active.
 
 ## Exit codes (run-all.sh)
 

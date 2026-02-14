@@ -4,6 +4,36 @@ All notable changes to the HPC Bench Suite are documented here. Version number i
 
 ## Version History
 
+### V1.10 Changes (2026-02-14)
+
+1. **scripts/run-all.sh** — Added CI mode:
+   - New flag: `--ci` (sets `HPC_CI=1` and enables quick-mode defaults).
+   - CI mode reduces noisy/interleaved stdout by writing module output to per-module logs and only printing compact status lines.
+   - On module failure/timeout in CI mode, prints a short tail snippet from the module log for fast diagnosis.
+2. **scripts/run-all.sh** — Added orchestrator-level minimal dependency preflight:
+   - Each module now has a minimal command prerequisite list (for example `jq`, `awk`, `timeout`, `python3` depending on module).
+   - Missing prerequisites are now reported as explicit **skips** with reason `missing commands: ...` and module JSON is still emitted.
+3. **scripts/run-all.sh** — Updated CLI help/unknown option messaging to include `--ci`.
+4. **scripts/run-all.sh** — Locking remains `flock`-first with fallback lock directory (`.hpc-bench.lock.d`) for minimal environments without `flock`.
+5. **scripts/inventory.sh** — Hardened for minimal/non-Linux developer environments:
+   - Guarded `lscpu` usage (no hard failure when command is absent).
+   - Numeric fields now normalized before `jq --argjson` usage.
+   - RAM math no longer depends on `bc`; uses awk and cross-platform fallback for local testing.
+   - Added command/file guards for `lsblk`, `/proc/uptime`, and `ip`.
+6. **scripts/network-inventory.sh** — Hardened JSON assembly:
+   - Prevents malformed JSON when optional IB commands return empty/error output.
+   - Validates NIC enrichment JSON and safely falls back to base NIC list when needed.
+7. **scripts/software-audit.sh** — Guarded Fabric Manager checks behind `has_cmd systemctl` to avoid noisy errors on non-systemd systems.
+8. **New script:** `scripts/ci-static-checks.sh`
+   - Runs `bash -n` for all shell scripts and `pre-commit run --all-files`.
+   - Used by CI as a static quality gate.
+9. **New CI workflow:** `.github/workflows/ci.yml`
+   - Static checks job (bash syntax + pre-commit).
+   - Ubuntu VM job running `--smoke --ci` and `--quick --ci` with result artifact upload.
+   - Optional self-hosted GPU quick job (enabled with repository variable `HPC_ENABLE_GPU_CI=1`).
+10. **README.md** — Added CI section, documented `--ci` / `HPC_CI`, updated lock fallback docs.
+11. **VERSION** — Bumped to `1.10`.
+
 ### V1.9 Changes (2026-02-12)
 
 1. **scripts/bootstrap.sh** — Dynamic NVIDIA stack install improvements:

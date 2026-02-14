@@ -5,23 +5,39 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== System Inventory ==="
 
+# Normalize potentially empty/non-numeric values for --argjson.
+to_json_int() {
+    local v="${1:-}"
+    [[ "$v" =~ ^[0-9]+$ ]] && printf '%s' "$v" || printf '0'
+}
+
 # ── CPU ──
-cpu_model=$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/,"",$2); print $2; exit}')
-cpu_sockets=$(lscpu 2>/dev/null | awk -F: '/^Socket\(s\)/ {gsub(/[ \t]/,"",$2); print $2}')
-cpu_cores_per_socket=$(lscpu 2>/dev/null | awk -F: '/Core\(s\) per socket/ {gsub(/[ \t]/,"",$2); print $2}')
-cpu_threads=$(nproc 2>/dev/null || echo "unknown")
+if has_cmd lscpu; then
+    _lscpu_out=$(lscpu 2>/dev/null || true)
+else
+    _lscpu_out=""
+fi
+cpu_model=$(echo "$_lscpu_out" | awk -F: '/Model name/ {gsub(/^[ \t]+/,"",$2); print $2; exit}')
+cpu_sockets=$(echo "$_lscpu_out" | awk -F: '/^Socket\(s\)/ {gsub(/[ \t]/,"",$2); print $2}')
+cpu_cores_per_socket=$(echo "$_lscpu_out" | awk -F: '/Core\(s\) per socket/ {gsub(/[ \t]/,"",$2); print $2}')
+cpu_threads=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo "0")
 cpu_arch=$(uname -m)
-numa_nodes=$(lscpu 2>/dev/null | awk -F: '/NUMA node\(s\)/ {gsub(/[ \t]/,"",$2); print $2}')
-cpu_flags=$(lscpu 2>/dev/null | awk -F: '/Flags/ {print $2}' | xargs)
+numa_nodes=$(echo "$_lscpu_out" | awk -F: '/NUMA node\(s\)/ {gsub(/[ \t]/,"",$2); print $2}')
+cpu_flags=$(echo "$_lscpu_out" | awk -F: '/Flags/ {print $2}' | xargs)
+cpu_sockets_num=$(to_json_int "$cpu_sockets")
+cpu_cores_per_socket_num=$(to_json_int "$cpu_cores_per_socket")
+cpu_threads_num=$(to_json_int "$cpu_threads")
+numa_nodes_num=$(to_json_int "${numa_nodes:-1}")
+total_cores_num=$((cpu_sockets_num * cpu_cores_per_socket_num))
 
 cpu_json=$(jq -n \
     --arg model "${cpu_model:-unknown}" \
     --arg arch "$cpu_arch" \
-    --argjson sockets "${cpu_sockets:-0}" \
-    --argjson cores_per_socket "${cpu_cores_per_socket:-0}" \
-    --argjson total_cores "$(( ${cpu_sockets:-0} * ${cpu_cores_per_socket:-0} ))" \
-    --argjson threads "${cpu_threads:-0}" \
-    --argjson numa "${numa_nodes:-1}" \
+    --argjson sockets "$cpu_sockets_num" \
+    --argjson cores_per_socket "$cpu_cores_per_socket_num" \
+    --argjson total_cores "$total_cores_num" \
+    --argjson threads "$cpu_threads_num" \
+    --argjson numa "$numa_nodes_num" \
     --argjson avx512 "$(echo "$cpu_flags" | grep -qw avx512f && echo true || echo false)" \
     --argjson amx "$(echo "$cpu_flags" | grep -qw amx && echo true || echo false)" \
     '{
@@ -37,8 +53,16 @@ cpu_json=$(jq -n \
     }')
 
 # ── RAM ──
-total_mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-total_mem_gb=$(echo "scale=1; $total_mem_kb / 1048576" | bc)
+if [ -r /proc/meminfo ]; then
+    total_mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
+elif has_cmd sysctl; then
+    # macOS fallback for local dev/testing; Linux path above is primary.
+    total_mem_kb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1024}' || echo "0")
+else
+    total_mem_kb="0"
+fi
+total_mem_kb=$(to_json_int "$total_mem_kb")
+total_mem_gb=$(awk -v kb="$total_mem_kb" 'BEGIN { printf "%.1f", kb/1048576 }')
 
 # DIMM details via dmidecode (requires root)
 dimm_json="[]"
@@ -84,7 +108,11 @@ ram_json=$(jq -n \
     '{total_gb: $total_gb, dimms: $dimms}')
 
 # ── Storage (filter out loop/ram devices) ──
-storage_json=$(lsblk -Jd -o NAME,SIZE,TYPE,MODEL,ROTA,TRAN,SERIAL 2>/dev/null | jq '[.blockdevices // [] | .[] | select(.type != "loop" and .type != "ram")]')
+if has_cmd lsblk; then
+    storage_json=$(lsblk -Jd -o NAME,SIZE,TYPE,MODEL,ROTA,TRAN,SERIAL 2>/dev/null | jq '[.blockdevices // [] | .[] | select(.type != "loop" and .type != "ram")]' 2>/dev/null || echo "[]")
+else
+    storage_json="[]"
+fi
 
 # SMART data for each disk (requires root)
 smart_arr="[]"
@@ -104,8 +132,17 @@ _hostname=$(hostname -f 2>/dev/null || hostname)
 _os_pretty=$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)
 _kernel=$(uname -r)
 _kernel_arch=$(uname -m)
-_uptime=$(awk '{print int($1)}' /proc/uptime)
-_ips=$(ip -j addr show 2>/dev/null | jq '[.[] | select(.ifname != "lo") | {iface: .ifname, addrs: [.addr_info[] | .local]}]' 2>/dev/null || echo "[]")
+if [ -r /proc/uptime ]; then
+    _uptime=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0")
+else
+    _uptime="0"
+fi
+_uptime=$(to_json_int "$_uptime")
+if has_cmd ip; then
+    _ips=$(ip -j addr show 2>/dev/null | jq '[.[] | select(.ifname != "lo") | {iface: .ifname, addrs: [.addr_info[] | .local]}]' 2>/dev/null || echo "[]")
+else
+    _ips="[]"
+fi
 
 os_json=$(jq -n \
     --arg hostname "$_hostname" \

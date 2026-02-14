@@ -21,6 +21,9 @@ nics_enriched=$(echo "$nics_json" | jq -c '.[]' | while read -r nic; do
     driver=$(ethtool -i "$ifname" 2>/dev/null | awk '/driver:/ {print $2}' || echo "unknown")
     echo "$nic" | jq --arg s "$speed" --arg d "$driver" '. + {speed: $s, driver: $d}'
 done | jq -s '.' 2>/dev/null || echo "$nics_json")
+if [ -z "${nics_enriched:-}" ] || ! echo "$nics_enriched" | jq . >/dev/null 2>&1; then
+    nics_enriched="$nics_json"
+fi
 
 # ── Bonding ──
 bond_json="[]"
@@ -36,7 +39,8 @@ fi
 # ── InfiniBand ──
 ib_json="[]"
 if has_cmd ibstat; then
-    ib_json=$(ibstat 2>/dev/null | awk '
+    _ibstat_out=$(ibstat 2>/dev/null || true)
+    ib_json=$(printf '%s\n' "$_ibstat_out" | awk '
     BEGIN { print "["; first=1 }
     /^CA / { if(ca!="") { if(!first) printf ","; first=0; printf "{\"ca\":\"%s\",\"type\":\"%s\",\"ports\":%s,\"fw\":\"%s\",\"state\":\"%s\",\"rate\":\"%s\"}\n", ca, catype, numports, fw, state, rate }; ca=$2; gsub(/'\''/,"",ca); catype=""; numports=0; fw=""; state=""; rate="" }
     /CA type:/ { catype=$0; sub(/.*CA type: */,"",catype) }
@@ -51,7 +55,8 @@ fi
 # ── ibv_devinfo ──
 ibv_json="[]"
 if has_cmd ibv_devinfo; then
-    ibv_json=$(ibv_devinfo 2>/dev/null | awk '
+    _ibv_out=$(ibv_devinfo 2>/dev/null || true)
+    ibv_json=$(printf '%s\n' "$_ibv_out" | awk '
     BEGIN { print "["; first=1 }
     /hca_id:/ { if(hca!="") { if(!first) printf ","; first=0; printf "{\"hca\":\"%s\",\"transport\":\"%s\",\"fw\":\"%s\",\"node_guid\":\"%s\"}\n", hca, transport, fw, guid }; hca=$NF; transport=""; fw=""; guid="" }
     /transport:/ { transport=$NF }

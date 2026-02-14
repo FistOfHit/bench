@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # run-all.sh — Master orchestrator for HPC bench suite
 # Runs all phases in order, handles timeouts, shows progress
-# Usage: run-all.sh [--quick] [--smoke] [--auto-install-runtime] [--fail-fast-runtime]
+# Usage: run-all.sh [--quick] [--smoke] [--ci] [--auto-install-runtime] [--fail-fast-runtime]
 #   --quick               short benchmarks to verify suite end-to-end
 #   --smoke               bootstrap + inventory + report only
+#   --ci                  CI-friendly mode (quick + quieter logs + deterministic defaults)
 #   --auto-install-runtime  auto-install NVIDIA container runtime during runtime-sanity
 #   --fail-fast-runtime   stop immediately if runtime-sanity fails
 SCRIPT_NAME="run-all"
@@ -28,12 +29,17 @@ while [ $# -gt 0 ]; do
             export HPC_AUTO_INSTALL_CONTAINER_RUNTIME=1
             shift
             ;;
+        --ci)
+            export HPC_CI=1
+            export HPC_QUICK=1
+            shift
+            ;;
         --fail-fast-runtime)
             export HPC_FAIL_FAST_RUNTIME=1
             shift
             ;;
         *)
-            log_warn "Unknown option: $1 (use --quick, --smoke, --auto-install-runtime, --fail-fast-runtime)"
+            log_warn "Unknown option: $1 (use --quick, --smoke, --ci, --auto-install-runtime, --fail-fast-runtime)"
             shift
             ;;
     esac
@@ -45,6 +51,10 @@ if [ "${HPC_QUICK:-0}" = "1" ]; then
 else
     MAX_MODULE_TIME=${MAX_MODULE_TIME:-1800}  # 30 min per module
 fi
+if [ "${HPC_CI:-0}" = "1" ]; then
+    # Keep CI runs deterministic and reasonably fast.
+    MAX_MODULE_TIME=${MAX_MODULE_TIME:-600}
+fi
 
 # Read version from single source of truth
 HPC_BENCH_VERSION=$(cat "${HPC_BENCH_ROOT}/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
@@ -52,14 +62,27 @@ export HPC_BENCH_VERSION
 
 # ── Exclusive lock — prevent concurrent runs clobbering results ──
 LOCKFILE="${HPC_RESULTS_DIR}/.hpc-bench.lock"
+LOCKDIR="${LOCKFILE}.d"
 mkdir -p "$(dirname "$LOCKFILE")" 2>/dev/null || true
-exec 9>"$LOCKFILE"
-if ! flock -n 9; then
-    echo "ERROR: Another instance of hpc-bench is already running (lockfile: $LOCKFILE)"
-    echo "If this is stale, remove $LOCKFILE and retry."
-    exit 2
+if has_cmd flock; then
+    exec 9>"$LOCKFILE"
+    if ! flock -n 9; then
+        echo "ERROR: Another instance of hpc-bench is already running (lockfile: $LOCKFILE)"
+        echo "If this is stale, remove $LOCKFILE and retry."
+        exit 2
+    fi
+    # Lock acquired — fd 9 held until process exits
+else
+    # Fallback for minimal environments without flock(1): atomic lock directory.
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        echo "$$" > "${LOCKDIR}/pid" 2>/dev/null || true
+        trap 'rm -rf "$LOCKDIR"' EXIT
+    else
+        echo "ERROR: Another instance of hpc-bench is already running (lockdir: $LOCKDIR)"
+        echo "If this is stale, remove $LOCKDIR and retry."
+        exit 2
+    fi
 fi
-# Lock acquired — fd 9 held until process exits
 
 log_info "================================================================"
 if [ "${HPC_SMOKE:-0}" = "1" ]; then
@@ -77,6 +100,9 @@ if [ "${HPC_AUTO_INSTALL_CONTAINER_RUNTIME:-0}" = "1" ]; then
 fi
 if [ "${HPC_FAIL_FAST_RUNTIME:-0}" = "1" ]; then
     log_info "  Runtime fail-fast: enabled"
+fi
+if [ "${HPC_CI:-0}" = "1" ]; then
+    log_info "  CI mode: enabled (compact module stdout, quick-mode defaults)"
 fi
 log_info "================================================================"
 
@@ -98,6 +124,58 @@ get_skip_reason() {
     fi
 }
 
+module_required_cmds() {
+    local name="$1"
+    case "$name" in
+        bootstrap) echo "jq awk grep" ;;
+        runtime-sanity) echo "jq" ;;
+        inventory) echo "jq awk" ;;
+        gpu-inventory) echo "jq python3" ;;
+        topology) echo "jq awk" ;;
+        network-inventory) echo "jq awk" ;;
+        bmc-inventory) echo "jq awk" ;;
+        software-audit) echo "jq awk grep" ;;
+        dcgm-diag) echo "jq timeout" ;;
+        gpu-burn) echo "jq timeout awk" ;;
+        nccl-tests) echo "jq timeout awk" ;;
+        nvbandwidth) echo "jq timeout python3" ;;
+        stream-bench) echo "jq timeout awk" ;;
+        storage-bench) echo "jq timeout" ;;
+        hpl-cpu) echo "jq timeout awk" ;;
+        hpl-mxp) echo "jq timeout awk" ;;
+        ib-tests) echo "jq timeout awk" ;;
+        network-diag) echo "jq awk" ;;
+        filesystem-diag) echo "jq awk" ;;
+        thermal-power) echo "jq awk" ;;
+        security-scan) echo "jq awk grep" ;;
+        report) echo "jq awk" ;;
+        *) echo "jq" ;;
+    esac
+}
+
+module_missing_cmds() {
+    local name="$1"
+    local req
+    local missing=()
+    for req in $(module_required_cmds "$name"); do
+        if ! has_cmd "$req"; then
+            missing+=("$req")
+        fi
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        local IFS=","
+        echo "${missing[*]}"
+    fi
+}
+
+skip_module_due_prereq() {
+    local name="$1" reason="$2" mod_duration="$3"
+    MODULE_STATUS[$name]="SKIPPED (${mod_duration}s): $reason"
+    SKIPPED=$((SKIPPED + 1))
+    log_warn "[$name] SKIPPED (${mod_duration}s): $reason"
+    jq -n --arg r "$reason" '{skip_reason: $r}' | emit_json "$name" "skipped" 2>/dev/null || true
+}
+
 run_module() {
     local script="$1"
     local name=$(basename "$script" .sh)
@@ -106,11 +184,25 @@ run_module() {
     echo ""
     log_info "━━━ [$TOTAL] Running: $name ━━━"
     local mod_start=$(date +%s)
+    local missing
+    missing=$(module_missing_cmds "$name")
+    if [ -n "$missing" ]; then
+        local mod_end mod_duration
+        mod_end=$(date +%s)
+        mod_duration=$((mod_end - mod_start))
+        skip_module_due_prereq "$name" "missing commands: $missing" "$mod_duration"
+        return 0
+    fi
 
     # Disable errexit/pipefail so a module failure doesn't kill the orchestrator
     set +eo pipefail
-    timeout "$MAX_MODULE_TIME" bash "$script" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
-    local rc=${PIPESTATUS[0]:-$?}
+    if [ "${HPC_CI:-0}" = "1" ]; then
+        timeout "$MAX_MODULE_TIME" bash "$script" >> "${HPC_LOG_DIR}/${name}-stdout.log" 2>&1
+        local rc=$?
+    else
+        timeout "$MAX_MODULE_TIME" bash "$script" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
+        local rc=${PIPESTATUS[0]:-$?}
+    fi
     set -eo pipefail
 
     local mod_end=$(date +%s)
@@ -137,10 +229,18 @@ run_module() {
         MODULE_STATUS[$name]="TIMEOUT (${MAX_MODULE_TIME}s limit)"
         FAILED=$((FAILED + 1))
         log_error "[$name] TIMEOUT after ${MAX_MODULE_TIME}s"
+        if [ "${HPC_CI:-0}" = "1" ]; then
+            log_error "[$name] tail log snippet:"
+            tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
+        fi
     else
         MODULE_STATUS[$name]="FAILED rc=$rc (${mod_duration}s)"
         FAILED=$((FAILED + 1))
         log_error "[$name] FAILED with rc=$rc (${mod_duration}s)"
+        if [ "${HPC_CI:-0}" = "1" ]; then
+            log_error "[$name] tail log snippet:"
+            tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -211,11 +311,24 @@ for script in "${PHASE1_SCRIPTS[@]}"; do
     TOTAL=$((TOTAL + 1))
     echo ""
     log_info "━━━ [$TOTAL] Running: $name ━━━"
+    missing=$(module_missing_cmds "$name")
+    if [ -n "$missing" ]; then
+        MODULE_STATUS[$name]="SKIPPED (0s): missing commands: $missing"
+        SKIPPED=$((SKIPPED + 1))
+        log_warn "[$name] SKIPPED (0s): missing commands: $missing"
+        jq -n --arg r "missing commands: $missing" '{skip_reason: $r}' | emit_json "$name" "skipped" 2>/dev/null || true
+        continue
+    fi
     (
         set +eo pipefail
         mod_start=$(date +%s)
-        timeout "$MAX_MODULE_TIME" bash "${SCRIPT_DIR}/${script}" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
-        rc=${PIPESTATUS[0]:-$?}
+        if [ "${HPC_CI:-0}" = "1" ]; then
+            timeout "$MAX_MODULE_TIME" bash "${SCRIPT_DIR}/${script}" >> "${HPC_LOG_DIR}/${name}-stdout.log" 2>&1
+            rc=$?
+        else
+            timeout "$MAX_MODULE_TIME" bash "${SCRIPT_DIR}/${script}" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
+            rc=${PIPESTATUS[0]:-$?}
+        fi
         mod_end=$(date +%s)
         echo "$rc $((mod_end - mod_start))" > "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
     ) &
@@ -250,10 +363,18 @@ for i in "${!_phase1_pids[@]}"; do
         MODULE_STATUS[$name]="TIMEOUT (${MAX_MODULE_TIME}s limit)"
         FAILED=$((FAILED + 1))
         log_error "[$name] TIMEOUT after ${MAX_MODULE_TIME}s"
+        if [ "${HPC_CI:-0}" = "1" ]; then
+            log_error "[$name] tail log snippet:"
+            tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
+        fi
     else
         MODULE_STATUS[$name]="FAILED rc=$rc (${mod_duration}s)"
         FAILED=$((FAILED + 1))
         log_error "[$name] FAILED with rc=$rc (${mod_duration}s)"
+        if [ "${HPC_CI:-0}" = "1" ]; then
+            log_error "[$name] tail log snippet:"
+            tail -n 40 "${HPC_LOG_DIR}/${name}-stdout.log" 2>/dev/null || true
+        fi
     fi
 done
 
