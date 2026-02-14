@@ -33,4 +33,3 @@ ci-smoke:
 
 ci-quick:
 	bash scripts/run-all.sh --quick --ci
-

@@ -51,4 +51,3 @@ The report generator expects:
 - Optional module logs under `$HPC_LOG_DIR/` (defaults to `$HPC_RESULTS_DIR/logs`)
 
 Avoid renaming JSON fields without updating the report and any external consumers.
-

@@ -15,7 +15,10 @@ repos:
         args: ['--maxkb=500']
       - id: detect-private-key
       - id: check-executables-have-shebangs
-        types: [text]
+        # This hook is intended to run only on executable *text* files.
+        # If we run it on all text files, it will (correctly) complain that
+        # non-script files lack a shebang.
+        types: [text, executable]
         exclude: '\.(md|json|yaml|yml)$|^src/|^\.gitignore$|^LICENSE$|^VERSION$|Makefile$'
       - id: check-shebang-scripts-are-executable
 
