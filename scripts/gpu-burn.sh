@@ -42,7 +42,12 @@ if [ ! -x "${BURN_DIR}/gpu_burn" ]; then
         exit 1
     fi
     cd "$BURN_DIR"
-    if ! make 2>&1 | tail -5; then
+    # Auto-detect GPU compute capability (e.g. "80" for A100) to avoid
+    # "Unsupported gpu architecture" with newer CUDA that dropped old arches.
+    _detected_cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:].' || true)
+    _detected_cc="${_detected_cc:-75}"  # fallback to 75
+    log_info "Building with COMPUTE=${_detected_cc}"
+    if ! make COMPUTE="$_detected_cc" 2>&1 | tail -5; then
         log_error "Failed to build gpu-burn"
         echo '{"error":"build failed"}' | emit_json "gpu-burn" "error"
         exit 1
@@ -81,6 +86,18 @@ sleep 1
 log_info "gpu-burn exited with rc=$burn_rc"
 log_info "gpu-burn output length: ${#burn_output} bytes"
 
+# ── Early exit: CUDA init failure (e.g. vGPU without compute, driver mismatch) ──
+if echo "$burn_output" | grep -qi "Couldn't init CUDA\|cuInit returned\|No CUDA devices"; then
+    _init_error=$(echo "$burn_output" | grep -i "Couldn't init CUDA\|cuInit returned\|No CUDA devices" | head -1 | tr -d '[:cntrl:]')
+    log_error "CUDA initialization failed: $_init_error"
+    RESULT=$(jq -n \
+        --arg dur "$BURN_DURATION" \
+        --arg err "$_init_error" \
+        '{duration_seconds: ($dur | tonumber), status: "error", error: $err, note: "CUDA could not initialize — driver mismatch or vGPU without compute capability"}')
+    finish_module "gpu-burn" "error" "$RESULT" '{status, error}'
+    exit 0
+fi
+
 # ── Post-burn temps ──
 post_temps=$(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]')
 
@@ -91,7 +108,7 @@ post_temps=$(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,
 errors_found=$(count_grep_re 'FAULTY' "$burn_output")
 
 # gpu-burn prints "OK" or "FAULTY" per GPU in the final summary
-gpu_results=$(echo "$burn_output" | grep -E "GPU [0-9]+.*: (OK|FAULTY)" | tail -20)
+gpu_results=$(echo "$burn_output" | grep -E "GPU [0-9]+.*: (OK|FAULTY)" | tail -20 || true)
 
 # Parse GFLOPS per GPU — use POSIX-compatible awk (no named capture groups)
 # Strategy: first try per-GPU summary lines (older gpu-burn), then fall back to

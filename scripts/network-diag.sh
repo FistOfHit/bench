@@ -8,7 +8,7 @@ log_info "=== Network Diagnostics ==="
 # ── Firewall rules ──
 fw_type="none"
 fw_rules=""
-if has_cmd nft && nft list ruleset &>/dev/null 2>&1; then
+if has_cmd nft && nft list ruleset &>/dev/null; then
     fw_type="nftables"
     fw_rules=$(nft list ruleset 2>/dev/null | head -200) || true
 elif has_cmd iptables; then

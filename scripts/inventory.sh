@@ -98,7 +98,7 @@ fi
 ram_json=$(jq -n \
     --argjson total_gb "$total_mem_gb" \
     --argjson dimms "$dimm_json" \
-    '{total_gb: $total_gb, dimms: $dimms}')
+    '{total_gb: $total_gb, dimm_count: ($dimms | length), dimms: $dimms}')
 
 # ── Storage (filter out loop/ram devices) ──
 if has_cmd lsblk; then
@@ -163,6 +163,6 @@ RESULT=$(jq -n \
     --argjson storage "$storage_json" \
     --argjson smart "$smart_arr" \
     --argjson os "$os_json" \
-    '{cpu: $cpu, ram: $ram, storage: {devices: $storage, smart: $smart}, os: $os}')
+    '{cpu: $cpu, ram: $ram, storage: {device_count: ($storage | length), devices: $storage, smart: $smart}, os: $os}')
 
 finish_module "inventory" "ok" "$RESULT"

@@ -81,6 +81,6 @@ RESULT=$(jq -n \
     --argjson ib "$ib_json" \
     --argjson ibv "$ibv_json" \
     --argjson roce "$roce_detected" \
-    '{nics: $nics, bonding: $bonds, infiniband: $ib, ibv_devices: $ibv, roce_detected: $roce}')
+    '{nic_count: ($nics | length), nics: $nics, bond_count: ($bonds | length), bonding: $bonds, ib_count: ($ib | length), infiniband: $ib, ibv_device_count: ($ibv | length), ibv_devices: $ibv, roce_detected: $roce}')
 
 finish_module "network-inventory" "ok" "$RESULT"

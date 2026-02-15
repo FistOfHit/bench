@@ -35,8 +35,9 @@ cd /path/to/hpc-bench
 # 1. Bootstrap (install dependencies, detect hardware) — requires root
 sudo bash scripts/bootstrap.sh
 
-# On fresh Ubuntu with an NVIDIA GPU, install driver + CUDA (internet required; reboot after driver install, then run bootstrap again):
+# On fresh Ubuntu with an NVIDIA GPU, install driver + CUDA (internet required; reboot after driver install, then run again):
 #   sudo bash scripts/bootstrap.sh --install-nvidia
+#   # Or pass to run-all: sudo bash scripts/run-all.sh --quick --install-nvidia
 # Optional: install Docker + NVIDIA container runtime (for hpl-mxp):
 #   sudo bash scripts/bootstrap.sh --install-nvidia-container-toolkit
 # Combined flow (recommended when you want hpl-mxp too):
@@ -55,6 +56,9 @@ sudo bash scripts/run-all.sh --smoke
 
 # CI-friendly mode (implies quick mode, compacts module stdout, emits failure snippets):
 sudo bash scripts/run-all.sh --ci
+
+# Install NVIDIA stack (driver + CUDA) when GPU present; run-all exits for reboot, then re-run:
+sudo bash scripts/run-all.sh --quick --install-nvidia
 
 # Runtime sanity controls:
 # - auto-install runtime if missing (Docker + NVIDIA container runtime)

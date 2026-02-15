@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
 # defaults.sh — Central configuration for HPC bench suite thresholds and tunables
+# Sourced by lib/common.sh. Do not run standalone.
 #
 # Override any value by exporting the variable before running the suite, e.g.:
 #   export GPU_THERMAL_WARN_C=90

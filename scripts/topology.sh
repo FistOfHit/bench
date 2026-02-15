@@ -40,8 +40,22 @@ nvswitch_count=$(int_or_default "${nvswitch_count:-0}" 0)
 lstopo_text=""
 if has_cmd lstopo; then
     lstopo_text=$(lstopo --of txt 2>/dev/null | head -200) || lstopo_text="N/A"
-    # Try SVG export
-    lstopo --of svg "${HPC_RESULTS_DIR}/topology.svg" 2>/dev/null && log_info "SVG topology saved" || true
+    # Generate a clean SVG focused on CPU/NUMA/Package hierarchy.
+    # --no-io:     hide PCI/disk/NIC clutter
+    # --no-caches: hide L1/L2/L3 boxes
+    # --no-smt:    hide individual PU (hardware thread) boxes
+    # --merge:     collapse levels with no hierarchical impact
+    # --no-attrs:  hide verbose size/frequency attributes (keeps labels)
+    # lstopo refuses to overwrite — remove stale file first
+    rm -f "${HPC_RESULTS_DIR}/topology.svg"
+    if lstopo --of svg --no-io --no-caches --no-smt --merge --no-attrs \
+             "${HPC_RESULTS_DIR}/topology.svg" 2>/dev/null; then
+        log_info "SVG topology saved (clean: no-io, no-caches, no-smt, merged)"
+    elif lstopo --of svg --no-io --merge "${HPC_RESULTS_DIR}/topology.svg" 2>/dev/null; then
+        log_info "SVG topology saved (fallback: no-io, merged)"
+    elif lstopo --of svg "${HPC_RESULTS_DIR}/topology.svg" 2>/dev/null; then
+        log_info "SVG topology saved (full — no filters supported)"
+    fi
 elif has_cmd hwloc-ls; then
     lstopo_text=$(hwloc-ls 2>/dev/null | head -200) || lstopo_text="N/A"
 fi
@@ -107,11 +121,15 @@ RESULT=$(jq -n \
     '{
         gpu_topology_matrix: $topo,
         nvlink: $nvlink,
+        nvlink_count: ($nvlink | length),
         nvswitch_count: ($nvsw | tonumber),
         lstopo: $lstopo,
+        numa_node_count: ($numa | length),
         numa_nodes: $numa,
         cpu_gpu_affinity: $affinity,
-        pcie_links: $pcie
+        gpu_affinity_count: ($affinity | length),
+        pcie_links: $pcie,
+        pcie_link_count: ($pcie | length)
     }')
 
 finish_module "topology" "ok" "$RESULT"

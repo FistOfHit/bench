@@ -88,6 +88,6 @@ RESULT=$(jq -n \
     --slurpfile pfs "$_tmp_p" \
     --slurpfile raid "$_tmp_r" \
     --slurpfile lvm "$_tmp_l" \
-    '{mounts: $mounts[0], parallel_filesystems: $pfs[0], raid: $raid[0], lvm: $lvm[0]}')
+    '{mount_count: ($mounts[0] | length), mounts: $mounts[0], parallel_filesystem_count: ($pfs[0] | length), parallel_filesystems: $pfs[0], raid: $raid[0], lv_count: ($lvm[0] | length), lvm: $lvm[0]}')
 
 finish_module "filesystem-diag" "ok" "$RESULT" '{mount_count: (.mounts|length), parallel_fs: .parallel_filesystems, raid_type: .raid.type}'

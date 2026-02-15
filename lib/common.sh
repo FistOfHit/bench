@@ -356,18 +356,18 @@ do_cleanup() {
     local exit_code=$?
 
     # Safety net: if the module exited without calling emit_json, write a crash record
-    # so the report doesn't silently skip this module
+    # so the report doesn't silently skip this module.
+    # Always overwrite stale JSON from prior runs (the old "skip" result is wrong if the
+    # module actually ran this time but crashed before finish_module).
     if [ "$_HPC_JSON_EMITTED" = false ] && [ -n "${SCRIPT_NAME:-}" ] && [ "$SCRIPT_NAME" != "run-all" ] && [ "$SCRIPT_NAME" != "report" ]; then
         local crash_file="${HPC_RESULTS_DIR}/${SCRIPT_NAME}.json"
-        if [ ! -f "$crash_file" ]; then
-            log_warn "Module '$SCRIPT_NAME' exited (code=$exit_code) without writing results — emitting crash record"
-            jq -n \
-                --arg m "$SCRIPT_NAME" \
-                --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-                --argjson rc "$exit_code" \
-                '{module: $m, status: "error", timestamp: $t, error: "Module exited unexpectedly", exit_code: $rc}' \
-                > "$crash_file" 2>/dev/null || true
-        fi
+        log_warn "Module '$SCRIPT_NAME' exited (code=$exit_code) without writing results — emitting crash record"
+        jq -n \
+            --arg m "$SCRIPT_NAME" \
+            --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson rc "$exit_code" \
+            '{module: $m, status: "error", timestamp: $t, error: "Module exited unexpectedly", exit_code: $rc}' \
+            > "$crash_file" 2>/dev/null || true
     fi
 
     # Original cleanup

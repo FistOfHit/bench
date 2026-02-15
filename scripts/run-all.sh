@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # run-all.sh — Master orchestrator for HPC bench suite
 # Runs all phases in order, handles timeouts, shows progress
-# Usage: run-all.sh [--quick] [--smoke] [--ci] [--auto-install-runtime] [--fail-fast-runtime]
-#   --quick               short benchmarks to verify suite end-to-end
-#   --smoke               bootstrap + inventory + report only
-#   --ci                  CI-friendly mode (quick + quieter logs + deterministic defaults)
-#   --auto-install-runtime  auto-install NVIDIA container runtime during runtime-sanity
-#   --fail-fast-runtime   stop immediately if runtime-sanity fails
+# Usage: run-all.sh [--quick] [--smoke] [--ci] [--install-nvidia] [--install-nvidia-container-toolkit] [--auto-install-runtime] [--fail-fast-runtime]
+#   --quick                       short benchmarks to verify suite end-to-end
+#   --smoke                       bootstrap + inventory + report only
+#   --ci                          CI-friendly mode (quick + quieter logs + deterministic defaults)
+#   --install-nvidia              pass to bootstrap: install NVIDIA driver+CUDA when GPU present (Ubuntu; reboot after)
+#   --install-nvidia-container-toolkit  pass to bootstrap: install Docker + NVIDIA container runtime
+#   --auto-install-runtime        auto-install NVIDIA container runtime during runtime-sanity
+#   --fail-fast-runtime           stop immediately if runtime-sanity fails
 SCRIPT_NAME="run-all"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -24,6 +26,7 @@ fi
 
 # Parse flags
 HPC_SMOKE=0
+BOOTSTRAP_EXTRA_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --quick)
@@ -33,6 +36,14 @@ while [ $# -gt 0 ]; do
         --smoke)
             HPC_SMOKE=1
             export HPC_QUICK=1
+            shift
+            ;;
+        --install-nvidia)
+            BOOTSTRAP_EXTRA_ARGS+=(--install-nvidia)
+            shift
+            ;;
+        --install-nvidia-container-toolkit)
+            BOOTSTRAP_EXTRA_ARGS+=(--install-nvidia-container-toolkit)
             shift
             ;;
         --auto-install-runtime)
@@ -49,7 +60,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         *)
-            log_warn "Unknown option: $1 (use --quick, --smoke, --ci, --auto-install-runtime, --fail-fast-runtime)"
+            log_warn "Unknown option: $1 (use --quick, --smoke, --ci, --install-nvidia, --auto-install-runtime, --fail-fast-runtime)"
             shift
             ;;
     esac
@@ -113,6 +124,9 @@ if [ "${HPC_FAIL_FAST_RUNTIME:-0}" = "1" ]; then
 fi
 if [ "${HPC_CI:-0}" = "1" ]; then
     log_info "  CI mode: enabled (compact module stdout, quick-mode defaults)"
+fi
+if [ "${#BOOTSTRAP_EXTRA_ARGS[@]}" -gt 0 ]; then
+    log_info "  Bootstrap flags: ${BOOTSTRAP_EXTRA_ARGS[*]}"
 fi
 log_info "================================================================"
 
@@ -238,13 +252,14 @@ record_module_result() {
 
 run_module_command() {
     local script="$1" name="$2"
+    shift 2
 
     if [ "${HPC_CI:-0}" = "1" ]; then
-        timeout "$MAX_MODULE_TIME" bash "$script" >> "${HPC_LOG_DIR}/${name}-stdout.log" 2>&1
+        timeout "$MAX_MODULE_TIME" bash "$script" "$@" >> "${HPC_LOG_DIR}/${name}-stdout.log" 2>&1
         return $?
     fi
 
-    timeout "$MAX_MODULE_TIME" bash "$script" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
+    timeout "$MAX_MODULE_TIME" bash "$script" "$@" 2>&1 | tee -a "${HPC_LOG_DIR}/${name}-stdout.log"
     return ${PIPESTATUS[0]:-$?}
 }
 
@@ -269,7 +284,11 @@ run_module() {
 
     # Disable errexit/pipefail so a module failure doesn't kill the orchestrator
     set +eo pipefail
-    run_module_command "$script" "$name"
+    if [ "$name" = "bootstrap" ] && [ "${#BOOTSTRAP_EXTRA_ARGS[@]}" -gt 0 ]; then
+        run_module_command "$script" "$name" "${BOOTSTRAP_EXTRA_ARGS[@]}"
+    else
+        run_module_command "$script" "$name"
+    fi
     local rc=$?
     set -eo pipefail
 
@@ -293,6 +312,16 @@ log_info "║  PHASE 0: Bootstrap                  ║"
 log_info "╚══════════════════════════════════════╝"
 if [ "$HPC_IS_ROOT" -eq 1 ]; then
     run_module "${SCRIPT_DIR}/bootstrap.sh"
+    # Bootstrap may exit after installing driver — requires reboot before GPU stack works
+    if [ -f "${HPC_RESULTS_DIR}/bootstrap.json" ] && jq -e '.reboot_required == true' "${HPC_RESULTS_DIR}/bootstrap.json" >/dev/null 2>&1; then
+        log_info "================================================================"
+        log_info "  NVIDIA driver was installed. Reboot required before GPU benchmarks."
+        _rerun="sudo bash scripts/run-all.sh"
+        [ "${#BOOTSTRAP_EXTRA_ARGS[@]}" -gt 0 ] && _rerun="$_rerun ${BOOTSTRAP_EXTRA_ARGS[*]}"
+        log_info "  After reboot, run: $_rerun"
+        log_info "================================================================"
+        exit 0
+    fi
 else
     TOTAL=$((TOTAL + 1))
     MODULE_STATUS[bootstrap]="SKIPPED (0s): requires root"
@@ -336,10 +365,10 @@ fi
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 2: Discovery & Inventory      ║"
 log_info "╚══════════════════════════════════════╝"
-mapfile -t PHASE1_SCRIPTS < <(manifest_phase_scripts 2 "$HPC_IS_ROOT")
-_phase1_pids=()
-_phase1_names=()
-for script in "${PHASE1_SCRIPTS[@]}"; do
+mapfile -t PHASE2_SCRIPTS < <(manifest_phase_scripts 2 "$HPC_IS_ROOT")
+_phase2_pids=()
+_phase2_names=()
+for script in "${PHASE2_SCRIPTS[@]}"; do
     name=$(basename "$script" .sh)
     TOTAL=$((TOTAL + 1))
     echo ""
@@ -358,19 +387,19 @@ for script in "${PHASE1_SCRIPTS[@]}"; do
         run_module_command "${SCRIPT_DIR}/${script}" "$name"
         rc=$?
         mod_end=$(date +%s)
-        echo "$rc $((mod_end - mod_start))" > "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
+        echo "$rc $((mod_end - mod_start))" > "${HPC_RESULTS_DIR}/.phase2_${name}.meta"
     ) &
-    _phase1_pids+=($!)
-    _phase1_names+=("$name")
+    _phase2_pids+=($!)
+    _phase2_names+=("$name")
 done
-for i in "${!_phase1_pids[@]}"; do
-    wait "${_phase1_pids[$i]}" 2>/dev/null || true
-    name="${_phase1_names[$i]}"
+for i in "${!_phase2_pids[@]}"; do
+    wait "${_phase2_pids[$i]}" 2>/dev/null || true
+    name="${_phase2_names[$i]}"
     rc=0
     mod_duration=0
-    if [ -f "${HPC_RESULTS_DIR}/.phase1_${name}.meta" ]; then
-        read -r rc mod_duration < "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
-        rm -f "${HPC_RESULTS_DIR}/.phase1_${name}.meta"
+    if [ -f "${HPC_RESULTS_DIR}/.phase2_${name}.meta" ]; then
+        read -r rc mod_duration < "${HPC_RESULTS_DIR}/.phase2_${name}.meta"
+        rm -f "${HPC_RESULTS_DIR}/.phase2_${name}.meta"
     fi
     record_module_result "$name" "$rc" "$mod_duration"
 done
@@ -382,8 +411,8 @@ if [ "${HPC_SMOKE:-0}" != "1" ]; then
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 3: Benchmarks                 ║"
 log_info "╚══════════════════════════════════════╝"
-mapfile -t PHASE2_SCRIPTS < <(manifest_phase_scripts 3 "$HPC_IS_ROOT")
-for script in "${PHASE2_SCRIPTS[@]}"; do
+mapfile -t PHASE3_SCRIPTS < <(manifest_phase_scripts 3 "$HPC_IS_ROOT")
+for script in "${PHASE3_SCRIPTS[@]}"; do
     run_module "${SCRIPT_DIR}/${script}"
 done
 fi
@@ -395,8 +424,8 @@ if [ "${HPC_SMOKE:-0}" != "1" ]; then
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 4: Diagnostics                ║"
 log_info "╚══════════════════════════════════════╝"
-mapfile -t PHASE3_SCRIPTS < <(manifest_phase_scripts 4 "$HPC_IS_ROOT")
-for script in "${PHASE3_SCRIPTS[@]}"; do
+mapfile -t PHASE4_SCRIPTS < <(manifest_phase_scripts 4 "$HPC_IS_ROOT")
+for script in "${PHASE4_SCRIPTS[@]}"; do
     run_module "${SCRIPT_DIR}/${script}"
 done
 fi
@@ -407,8 +436,8 @@ fi
 log_info "╔══════════════════════════════════════╗"
 log_info "║  PHASE 5: Report                     ║"
 log_info "╚══════════════════════════════════════╝"
-mapfile -t PHASE4_SCRIPTS < <(manifest_phase_scripts 5 "$HPC_IS_ROOT")
-for script in "${PHASE4_SCRIPTS[@]}"; do
+mapfile -t PHASE5_SCRIPTS < <(manifest_phase_scripts 5 "$HPC_IS_ROOT")
+for script in "${PHASE5_SCRIPTS[@]}"; do
     run_module "${SCRIPT_DIR}/${script}"
 done
 

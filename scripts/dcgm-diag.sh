@@ -60,14 +60,17 @@ if [ "$diag_level" -eq 0 ]; then
     exit 1
 fi
 
-# Parse results — look for PASS/FAIL/WARN/SKIP per test
+# Parse results — look for PASS/FAIL/WARN/SKIP per test (POSIX awk, no gawk match() 3rd arg)
 tests_json=$(echo "$diag_output" | awk '
 BEGIN { print "["; first=1 }
 /PASS|FAIL|WARN|SKIP/ {
     # Lines like: "  Diagnostic                  : PASS"
-    if (match($0, /^[[:space:]]*([A-Za-z ]+[A-Za-z])[[:space:]]*:[[:space:]]*(PASS|FAIL|WARN|SKIP)/, m)) {
-        name = m[1]; gsub(/^[ \t]+|[ \t]+$/, "", name)
-        result = m[2]
+    if (match($0, /:[[:space:]]*(PASS|FAIL|WARN|SKIP)/)) {
+        result = substr($0, RSTART + 1)
+        gsub(/^[ \t]+|[ \t\r\n]+$/, "", result)
+        name = substr($0, 1, RSTART - 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", name)
+        gsub(/"/, "\\\"", name)
         if (!first) printf ","
         first = 0
         printf "{\"test\":\"%s\",\"result\":\"%s\"}", name, result

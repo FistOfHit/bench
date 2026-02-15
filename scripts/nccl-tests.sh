@@ -50,7 +50,23 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
     # Build without MPI dependency; tests are launched as single process with -g <num_gpus>.
     MPI_FLAG="MPI=0"
 
-    if ! make -j$(nproc) CUDA_HOME="$CUDA_HOME" $MPI_FLAG 2>&1 | tail -10; then
+    # Auto-detect GPU compute capability to avoid "Unsupported gpu architecture"
+    # errors when the installed CUDA version has dropped older arches (e.g. CUDA 13 drops compute_70).
+    _detected_cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:].' || true)
+    if [ -n "$_detected_cc" ]; then
+        # Normalize: "80" → "compute_80,code=sm_80"
+        _cc_major="${_detected_cc%?}"   # e.g. "8"
+        _cc_minor="${_detected_cc#?}"    # e.g. "0"  (or second char for 2-digit)
+        _cc_full="${_cc_major}${_cc_minor}"
+        NVCC_GENCODE="-gencode=arch=compute_${_cc_full},code=sm_${_cc_full}"
+        log_info "Auto-detected GPU compute capability: ${_cc_full} → NVCC_GENCODE=${NVCC_GENCODE}"
+    else
+        # Fallback: let the Makefile's default handle it
+        NVCC_GENCODE=""
+        log_warn "Could not detect GPU compute capability; using Makefile default NVCC_GENCODE"
+    fi
+
+    if ! make -j$(nproc) CUDA_HOME="$CUDA_HOME" $MPI_FLAG ${NVCC_GENCODE:+NVCC_GENCODE="$NVCC_GENCODE"} 2>&1 | tail -10; then
         log_error "Failed to build nccl-tests"
         echo '{"error":"build failed"}' | emit_json "nccl-tests" "error"
         exit 1
