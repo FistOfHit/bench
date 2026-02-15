@@ -1,0 +1,6 @@
+# .shellcheckrc — Project-wide shellcheck configuration
+#
+# SC2034: "X appears unused" — SCRIPT_NAME is set in every module script
+# and consumed by lib/common.sh (which is sourced). Shellcheck can't trace
+# cross-file variable usage.
+disable=SC2034

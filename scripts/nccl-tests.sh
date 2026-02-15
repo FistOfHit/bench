@@ -5,7 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== NCCL Tests ==="
 
-require_gpu "nccl-tests" "no GPU"
+require_gpu "nccl-tests"
 
 NGPUS=$(gpu_count)
 [ "$NGPUS" -lt 2 ] && skip_module "nccl-tests" "requires >=2 GPUs, found $NGPUS"
@@ -31,16 +31,16 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
     fi
 
     # Prefer bundled source for repeatability; fallback to online clone.
+    # Note: clone_or_copy_source prefers git; we reverse priority here by
+    # checking bundled first (repeatability matters for NCCL tests).
     BUNDLED_NCCL="${HPC_BENCH_ROOT}/src/nccl-tests"
     rm -rf "$NCCL_DIR"
     if [ -f "${BUNDLED_NCCL}/Makefile" ]; then
         log_info "Using bundled nccl-tests source"
-        rm -rf "$NCCL_DIR"
         cp -r "$BUNDLED_NCCL" "$NCCL_DIR"
-    elif git clone https://github.com/NVIDIA/nccl-tests.git "$NCCL_DIR" 2>/dev/null; then
-        log_info "Using nccl-tests from upstream (git clone)"
-    else
-        log_error "Failed to clone nccl-tests and no bundled source available"
+    elif ! clone_or_copy_source "$NCCL_DIR" \
+            "https://github.com/NVIDIA/nccl-tests.git" \
+            "$BUNDLED_NCCL" "nccl-tests"; then
         echo '{"error":"source unavailable"}' | emit_json "nccl-tests" "error"
         exit 1
     fi
@@ -52,16 +52,11 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
 
     # Auto-detect GPU compute capability to avoid "Unsupported gpu architecture"
     # errors when the installed CUDA version has dropped older arches (e.g. CUDA 13 drops compute_70).
-    _detected_cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:].' || true)
+    _detected_cc=$(detect_compute_capability)
     if [ -n "$_detected_cc" ]; then
-        # Normalize: "80" → "compute_80,code=sm_80"
-        _cc_major="${_detected_cc%?}"   # e.g. "8"
-        _cc_minor="${_detected_cc#?}"    # e.g. "0"  (or second char for 2-digit)
-        _cc_full="${_cc_major}${_cc_minor}"
-        NVCC_GENCODE="-gencode=arch=compute_${_cc_full},code=sm_${_cc_full}"
-        log_info "Auto-detected GPU compute capability: ${_cc_full} → NVCC_GENCODE=${NVCC_GENCODE}"
+        NVCC_GENCODE="-gencode=arch=compute_${_detected_cc},code=sm_${_detected_cc}"
+        log_info "Auto-detected GPU compute capability: ${_detected_cc} → NVCC_GENCODE=${NVCC_GENCODE}"
     else
-        # Fallback: let the Makefile's default handle it
         NVCC_GENCODE=""
         log_warn "Could not detect GPU compute capability; using Makefile default NVCC_GENCODE"
     fi

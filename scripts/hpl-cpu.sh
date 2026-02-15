@@ -173,11 +173,9 @@ if [ "$hpl_method" = "none" ]; then
     # In CI / quick runs, HPL is best-effort: missing container image, blocked egress,
     # or unavailable packages shouldn't fail the entire suite.
     if [ "${HPC_CI:-0}" = "1" ] || [ "${HPC_QUICK:-0}" = "1" ]; then
-        log_warn "HPL unavailable; skipping: $hpl_skip_note"
-        jq -n --arg note "$hpl_skip_note" --arg detail "$hpl_err_detail" \
-            '{note: "HPL unavailable", skip_reason: $note, detail: (if $detail != "" then $detail else null end)}' \
-            | emit_json "hpl-cpu" "skipped"
-        exit 0
+        skip_module_with_data "hpl-cpu" "$hpl_skip_note" \
+            "$(jq -n --arg detail "$hpl_err_detail" \
+                '{detail: (if $detail != "" then $detail else null end)}')"
     fi
 
     log_error "HPL unavailable: $hpl_skip_note"

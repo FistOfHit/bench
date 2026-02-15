@@ -5,7 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== nvbandwidth ==="
 
-require_gpu "nvbandwidth" "no GPU"
+require_gpu "nvbandwidth"
 
 NVB_DIR="${HPC_WORK_DIR}/nvbandwidth"
 NVB_BIN="${NVB_DIR}/nvbandwidth"
@@ -45,9 +45,7 @@ if [ ! -x "$NVB_BIN" ]; then
         else
             # 3. Check if cmake is available before attempting build
             if ! has_cmd cmake; then
-                log_warn "nvbandwidth not found and cmake not available — skipping"
-                echo '{"note":"nvbandwidth not found, cmake unavailable for build","skip_reason":"no cmake"}' | emit_json "nvbandwidth" "skipped"
-                exit 0
+                skip_module "nvbandwidth" "nvbandwidth not found, cmake unavailable for build"
             fi
 
             # 4. Last resort: try git clone (nvbandwidth is CMake-based, too complex to bundle)
@@ -61,14 +59,10 @@ if [ ! -x "$NVB_BIN" ]; then
                    make -j$(nproc) 2>&1 | tail -5; then
                     NVB_BIN="${NVB_DIR}/build/nvbandwidth"
                 else
-                    log_warn "nvbandwidth build failed — skipping (install CUDA toolkit with nvbandwidth or use bare metal)"
-                    echo '{"note":"build failed","skip_reason":"nvbandwidth not available — install CUDA toolkit with nvbandwidth or ensure internet and build deps"}' | emit_json "nvbandwidth" "skipped"
-                    exit 0
+                    skip_module "nvbandwidth" "build failed — install CUDA toolkit with nvbandwidth or ensure internet and build deps"
                 fi
             else
-                log_warn "nvbandwidth not available offline (not bundled). Install via CUDA toolkit or ensure internet for git clone."
-                echo '{"note":"nvbandwidth not available offline","skip_reason":"Install CUDA toolkit >= 12.x which includes nvbandwidth, or ensure internet access for git clone"}' | emit_json "nvbandwidth" "skipped"
-                exit 0
+                skip_module "nvbandwidth" "not available offline — install CUDA toolkit >= 12.x or ensure internet for git clone"
             fi
         fi
     fi

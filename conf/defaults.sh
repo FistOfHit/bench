@@ -16,6 +16,7 @@
 : "${GPU_BURN_DURATION_QUICK:=10}"     # Quick mode burn (seconds, ≥10 for GFLOPS)
 : "${GPU_BURN_DURATION_VM:=60}"        # VM burn duration (seconds)
 : "${GPU_BURN_DURATION_FULL:=300}"     # Bare-metal burn duration (seconds)
+: "${GPU_BURN_TIMEOUT_GRACE:=120}"     # Extra seconds beyond burn duration for timeout
 
 # ── NCCL Tests ──
 : "${NCCL_TIMEOUT_QUICK:=45}"         # Timeout per test in quick mode
@@ -32,6 +33,7 @@
 # ── Storage Bench ──
 : "${STORAGE_BENCH_DURATION_QUICK:=5}" # fio runtime per profile in quick mode (seconds)
 : "${STORAGE_BENCH_DURATION_FULL:=60}" # fio runtime per profile in full mode (seconds)
+: "${FIO_PROFILE_TIMEOUT:=120}"        # Per-profile hard timeout for fio (seconds)
 
 # ── STREAM Bench ──
 : "${STREAM_ARRAY_SIZE_QUICK:=1000000}"   # Array elements in quick mode

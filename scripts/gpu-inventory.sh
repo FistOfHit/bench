@@ -5,11 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== GPU Inventory ==="
 
-if ! has_cmd nvidia-smi; then
-    log_warn "nvidia-smi not found — skipping GPU inventory"
-    echo '{"gpus":[],"driver":"none","note":"nvidia-smi not found"}' | emit_json "gpu-inventory" "skipped"
-    exit 0
-fi
+has_cmd nvidia-smi || skip_module "gpu-inventory" "nvidia-smi not found"
 
 if ! nvidia-smi &>/dev/null; then
     log_error "nvidia-smi failed — driver issue"

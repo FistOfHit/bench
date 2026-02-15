@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# gpu-burn.sh — GPU stress test using gpu-burn (V1.1)
-# Fixed: Output capture, error handling, cleanup ordering
+# gpu-burn.sh — GPU stress test using gpu-burn
+# Builds from source (online or bundled), runs burn, parses GFLOPS and temps
 SCRIPT_NAME="gpu-burn"
 source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== GPU Burn Stress Test ==="
 
-require_gpu "gpu-burn" "no nvidia-smi"
+require_gpu "gpu-burn"
 
 # Quick mode (HPC_QUICK=1): 10s burn to verify suite (≥10s needed for GFLOPS output);
 # VMs: shorter; else 5 min default. Override with GPU_BURN_DURATION.
@@ -28,23 +28,16 @@ if [ ! -x "${BURN_DIR}/gpu_burn" ]; then
     log_info "Building gpu-burn..."
 
     # Prefer latest from online; fallback to bundled source in src/gpu-burn/
-    BUNDLED_BURN="${HPC_BENCH_ROOT}/src/gpu-burn"
-    rm -rf "$BURN_DIR"
-    if git clone https://github.com/wilicc/gpu-burn.git "$BURN_DIR" 2>/dev/null; then
-        log_info "Using gpu-burn from upstream (git clone)"
-    elif [ -f "${BUNDLED_BURN}/Makefile" ]; then
-        log_info "Using bundled gpu-burn source (online clone failed or offline)"
-        rm -rf "$BURN_DIR"
-        cp -r "$BUNDLED_BURN" "$BURN_DIR"
-    else
-        log_error "Failed to clone gpu-burn and no bundled source available"
+    if ! clone_or_copy_source "$BURN_DIR" \
+            "https://github.com/wilicc/gpu-burn.git" \
+            "${HPC_BENCH_ROOT}/src/gpu-burn" "gpu-burn"; then
         echo '{"error":"source unavailable"}' | emit_json "gpu-burn" "error"
         exit 1
     fi
-    cd "$BURN_DIR"
+    cd "$BURN_DIR" || exit 1
     # Auto-detect GPU compute capability (e.g. "80" for A100) to avoid
     # "Unsupported gpu architecture" with newer CUDA that dropped old arches.
-    _detected_cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:].' || true)
+    _detected_cc=$(detect_compute_capability)
     _detected_cc="${_detected_cc:-75}"  # fallback to 75
     log_info "Building with COMPUTE=${_detected_cc}"
     if ! make COMPUTE="$_detected_cc" 2>&1 | tail -5; then
@@ -56,7 +49,7 @@ fi
 register_cleanup "$BURN_DIR"
 
 # ── Run gpu-burn ──
-cd "$BURN_DIR"
+cd "$BURN_DIR" || exit 1
 log_info "Running gpu-burn for ${BURN_DURATION}s..."
 
 # Capture temps during burn in background
@@ -73,9 +66,10 @@ echo "timestamp,gpu,temp_c,power_w" > "$TEMP_LOG"
 ) &
 TEMP_PID=$!
 
-# Run gpu_burn directly with timeout, capture stdout
+# Run gpu_burn with timeout, capturing stdout for GFLOPS parsing.
+# Uses raw timeout (not run_with_timeout) because we need the output in a variable.
 burn_output=""
-burn_output=$(timeout --signal=KILL $((BURN_DURATION + 120)) ./gpu_burn "$BURN_DURATION" 2>&1) || true
+burn_output=$(timeout --signal=KILL $((BURN_DURATION + GPU_BURN_TIMEOUT_GRACE)) ./gpu_burn "$BURN_DURATION" 2>&1) || true
 burn_rc=$?
 
 # Kill temp monitoring; allow in-flight write to flush (avoids corrupt CSV/JSON)

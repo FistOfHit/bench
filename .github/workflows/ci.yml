@@ -7,6 +7,32 @@ on:
   workflow_dispatch:
 
 jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck (error severity)
+        run: shellcheck -s bash -S error scripts/*.sh lib/*.sh
+
+  unit-tests:
+    name: Unit Tests (bats)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y bats jq bc
+
+      - name: Run unit tests
+        run: bats tests/
+
   static-checks:
     name: Static Checks (bash + pre-commit)
     runs-on: ubuntu-latest
@@ -25,7 +51,7 @@ jobs:
   vm-smoke-quick:
     name: Ubuntu VM (smoke + quick)
     runs-on: ubuntu-latest
-    needs: static-checks
+    needs: [shellcheck, unit-tests, static-checks]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,7 +78,7 @@ jobs:
   gpu-quick-self-hosted:
     name: GPU Host Quick (self-hosted)
     runs-on: [self-hosted, linux, x64, gpu, nvidia]
-    needs: static-checks
+    needs: [shellcheck, unit-tests, static-checks]
     if: ${{ vars.HPC_ENABLE_GPU_CI == '1' }}
     steps:
       - name: Checkout

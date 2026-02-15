@@ -54,9 +54,12 @@ log_error() { _log ERROR "$@"; }
 log_ok()    { _log OK    "$@"; }
 
 # ── JSON helpers ──
-# Emit a JSON result file for a module
-# _HPC_JSON_EMITTED tracks whether this was called, used by the crash-safety trap
-_HPC_JSON_EMITTED=false
+# Emit a JSON result file for a module.
+# _HPC_JSON_MARKER tracks whether emit_json was called in this process.
+# We use a marker FILE (not a variable) because emit_json is often called on the
+# right side of a pipe (e.g. echo "$json" | emit_json ...), which runs in a
+# subshell — variable changes inside the subshell are invisible to the parent.
+_HPC_JSON_MARKER="${HPC_WORK_DIR}/.emit_marker_${SCRIPT_NAME:-unknown}_$$"
 
 # Standard module completion: emit JSON, log summary, print compact output.
 # Usage: finish_module "module-name" "status" '{...json...}' '.{key1, key2}'
@@ -70,7 +73,7 @@ finish_module() {
 }
 
 emit_json() {
-    _HPC_JSON_EMITTED=true
+    touch "$_HPC_JSON_MARKER" 2>/dev/null || true
     local module="$1" status="$2" file="${HPC_RESULTS_DIR}/${1}.json"
     shift 2
     # Read JSON object from stdin or remaining args
@@ -95,19 +98,34 @@ emit_json_safe() {
         jq -n --arg m "$module" --arg e "Invalid JSON output" \
             '{module: $m, status: "error", error: $e}' \
             > "${HPC_RESULTS_DIR}/${module}.json"
-        _HPC_JSON_EMITTED=true
+        touch "$_HPC_JSON_MARKER" 2>/dev/null || true
         return 1
     fi
     echo "$input" | emit_json "$module" "$status"
 }
 
-# Sanitize string for JSON - removes control characters and escapes properly
+# Sanitize string for safe embedding in JSON — strips control characters
+# (U+0000–U+001F), then JSON-encodes with proper escaping.
+# Uses python3 when available; falls back to jq, then to pure-bash escaping
+# so the suite never silently breaks without python3.
 sanitize_json_str() {
-    printf '%s' "$1" | tr -d '\000-\037' | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")' 2>/dev/null || printf '"%s"' "$1"
+    local input
+    input=$(printf '%s' "$1" | tr -d '\000-\037')
+    if has_cmd python3; then
+        printf '%s' "$input" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")' 2>/dev/null && return
+    fi
+    if has_cmd jq; then
+        printf '%s' "$input" | jq -Rs '.' 2>/dev/null && return
+    fi
+    # Last resort: manual escaping (handles quotes and backslashes)
+    input="${input//\\/\\\\}"
+    input="${input//\"/\\\"}"
+    printf '"%s"' "$input"
 }
 
-# Simple JSON string escape (legacy, use sanitize_json_str for user input)
-json_str() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
+# Alias for sanitize_json_str — kept for backward compatibility.
+# Prefer sanitize_json_str() in new code.
+json_str() { sanitize_json_str "$@"; }
 
 # Trim leading/trailing whitespace.
 trim_ws() {
@@ -240,8 +258,17 @@ safe_json_pipe() {
     printf '%s' "$_output"
 }
 
-# ── Virtualization detection ──
+# ── Virtualization detection (cached) ──
+# Result is cached in _HPC_VIRT_CACHE after the first call to avoid repeated
+# subprocess spawning (systemd-detect-virt, grep /proc/cpuinfo, DMI reads).
+_HPC_VIRT_CACHE=""
+
 detect_virtualization() {
+    if [ -n "$_HPC_VIRT_CACHE" ]; then
+        echo "$_HPC_VIRT_CACHE"
+        return
+    fi
+
     local virt_type="none"
     local virt_details=""
 
@@ -258,7 +285,7 @@ detect_virtualization() {
             virt_type="hypervisor"
         elif [ -f /sys/class/dmi/id/product_name ]; then
             local product
-            product=$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo "")
+            product=$(</sys/class/dmi/id/product_name 2>/dev/null) || product=""
             case "$product" in
                 *VMware*|*ESXi*) virt_type="vmware" ;;
                 *VirtualBox*) virt_type="virtualbox" ;;
@@ -277,11 +304,12 @@ detect_virtualization() {
         virt_details="container"
     fi
 
-    # Strip control characters so jq never sees invalid JSON (e.g. systemd-detect-virt or DMI can emit stray bytes)
+    # Strip control characters so jq never sees invalid JSON
     virt_type=$(printf '%s' "$virt_type" | tr -d '\000-\037')
     virt_details=$(printf '%s' "$virt_details" | tr -d '\000-\037')
 
-    echo "{\"type\": \"$virt_type\", \"details\": \"$virt_details\"}"
+    _HPC_VIRT_CACHE="{\"type\": \"$virt_type\", \"details\": \"$virt_details\"}"
+    echo "$_HPC_VIRT_CACHE"
 }
 
 is_virtualized() {
@@ -357,9 +385,9 @@ do_cleanup() {
 
     # Safety net: if the module exited without calling emit_json, write a crash record
     # so the report doesn't silently skip this module.
-    # Always overwrite stale JSON from prior runs (the old "skip" result is wrong if the
-    # module actually ran this time but crashed before finish_module).
-    if [ "$_HPC_JSON_EMITTED" = false ] && [ -n "${SCRIPT_NAME:-}" ] && [ "$SCRIPT_NAME" != "run-all" ] && [ "$SCRIPT_NAME" != "report" ]; then
+    # We check the marker file (not a variable) because emit_json may run in a
+    # pipe subshell where variable changes are invisible to the parent.
+    if [ ! -f "${_HPC_JSON_MARKER:-/nonexistent}" ] && [ -n "${SCRIPT_NAME:-}" ] && [ "$SCRIPT_NAME" != "run-all" ] && [ "$SCRIPT_NAME" != "report" ]; then
         local crash_file="${HPC_RESULTS_DIR}/${SCRIPT_NAME}.json"
         log_warn "Module '$SCRIPT_NAME' exited (code=$exit_code) without writing results — emitting crash record"
         jq -n \
@@ -369,6 +397,8 @@ do_cleanup() {
             '{module: $m, status: "error", timestamp: $t, error: "Module exited unexpectedly", exit_code: $rc}' \
             > "$crash_file" 2>/dev/null || true
     fi
+    # Clean up the marker file
+    rm -f "${_HPC_JSON_MARKER:-/nonexistent}" 2>/dev/null || true
 
     # Original cleanup
     if [ "${HPC_KEEP_TOOLS:-0}" = "1" ]; then
@@ -384,7 +414,7 @@ do_cleanup() {
 }
 trap do_cleanup EXIT
 
-# ── Skip module helper ──
+# ── Skip module helpers ──
 # Usage: skip_module "module-name" "reason text"
 # Emits a standard "skipped" JSON record and exits cleanly.
 skip_module() {
@@ -395,10 +425,23 @@ skip_module() {
     exit 0
 }
 
+# Usage: skip_module_with_data "module-name" "reason" '{"extra_key": "value", ...}'
+# Like skip_module but merges caller-supplied JSON fields into the skip record.
+# The extra_json argument must be a valid JSON object string.
+skip_module_with_data() {
+    local module="${1:?skip_module_with_data: module name required}"
+    local reason="${2:-not applicable}"
+    local extra_json="${3:-{}}"
+    log_warn "Skipping $module: $reason"
+    printf '%s' "$extra_json" \
+        | jq --arg note "$reason" '. + {note: $note, skip_reason: $note}' \
+        | emit_json "$module" "skipped"
+    exit 0
+}
+
 # ── GPU requirement (skip module when no NVIDIA GPU) ──
 require_gpu() {
     local module="${1:?require_gpu: module name required}"
-    local note="${2:-no GPU}"
     if ! has_cmd nvidia-smi; then
         skip_module "$module" "nvidia-smi not found"
     fi
@@ -445,4 +488,32 @@ nvlink_status() {
     done
 
     echo "{\"available\": true, \"total_links\": $link_count, \"gpus\": $gpu_count}"
+}
+
+# ── GPU compute capability detection (shared by gpu-burn, nccl-tests) ──
+# Returns the numeric compute capability string (e.g. "80" for sm_80) or empty.
+detect_compute_capability() {
+    local cc
+    cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+        | head -1 | tr -d '[:space:].')
+    printf '%s' "${cc:-}"
+}
+
+# ── Clone-or-copy source helper (shared by gpu-burn, nccl-tests) ──
+# Usage: clone_or_copy_source <dest_dir> <git_url> <bundled_src_dir> <label>
+# Clones from git_url; on failure copies bundled source. Returns 1 if neither works.
+clone_or_copy_source() {
+    local dest="$1" git_url="$2" bundled="$3" label="${4:-source}"
+    rm -rf "$dest"
+    if git clone "$git_url" "$dest" 2>/dev/null; then
+        log_info "Using $label from upstream (git clone)"
+        return 0
+    fi
+    if [ -f "${bundled}/Makefile" ]; then
+        log_info "Using bundled $label (online clone failed or offline)"
+        cp -r "$bundled" "$dest"
+        return 0
+    fi
+    log_error "Failed to obtain $label: git clone failed and no bundled source"
+    return 1
 }

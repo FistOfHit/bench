@@ -5,7 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== HPL-MxP (GPU) Benchmark ==="
 
-require_gpu "hpl-mxp" "no GPU"
+require_gpu "hpl-mxp"
 HPL_MXP_VM_STRICT="${HPC_HPL_MXP_VM_STRICT:-0}"
 if [ "$HPL_MXP_VM_STRICT" = "1" ]; then
     log_info "HPL-MxP VM strict mode enabled (no VM auto-skip conversion)"
@@ -130,10 +130,8 @@ if [ "$_hpl_image_ready" = false ]; then
 fi
 
 if [ "$_hpl_image_ready" = false ]; then
-    log_warn "HPL-MxP skipped: container image not found locally and pull failed (air-gapped?)"
     log_info "To run offline: docker save $HPL_IMAGE > hpc-benchmarks.tar, place in src/, re-run"
-    echo '{"note":"HPL container image unavailable — not found locally, pull failed","skip_reason":"no container image"}' | emit_json "hpl-mxp" "skipped"
-    exit 0
+    skip_module "hpl-mxp" "HPL container image unavailable — not found locally, pull failed"
 fi
 
 # Create HPL config
@@ -193,9 +191,7 @@ hpl_output=$(run_with_timeout "$HPL_MXP_TIMEOUT" "hpl-mxp" \
 # If run produced no usable output (e.g. container crash, SIGPIPE in VM), skip gracefully
 if [ -z "$hpl_output" ] || ! echo "$hpl_output" | grep -q "WR[0-9]\|PASSED"; then
     if vm_skip_allowed; then
-        log_warn "HPL-MxP produced no results (typical in VMs) — skipping"
-        echo '{"note":"HPL-MxP run produced no results (container/VM limitation)","skip_reason":"vm"}' | emit_json "hpl-mxp" "skipped"
-        exit 0
+        skip_module "hpl-mxp" "HPL-MxP run produced no results (container/VM limitation)"
     fi
     log_error "HPL-MxP run produced no usable output"
     echo '{"error":"no usable output from HPL-MxP run"}' | emit_json "hpl-mxp" "error"

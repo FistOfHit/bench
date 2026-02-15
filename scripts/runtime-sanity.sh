@@ -8,6 +8,30 @@ log_info "=== Runtime Sanity Check ==="
 AUTO_INSTALL="${HPC_AUTO_INSTALL_CONTAINER_RUNTIME:-0}"
 FAIL_FAST="${HPC_FAIL_FAST_RUNTIME:-0}"
 
+# Build the runtime-sanity JSON payload (called from multiple exit paths).
+_build_sanity_json() {
+    local note="$1"
+    jq -n \
+        --arg note "$note" \
+        --argjson has_gpu_driver "$has_gpu_driver" \
+        --argjson gpu_count "${gpu_count_now:-0}" \
+        --argjson has_docker "$has_docker" \
+        --argjson has_nvidia_container_runtime "$nvidia_runtime" \
+        --argjson has_dcgm "$has_dcgm" \
+        --arg auto_install "$AUTO_INSTALL" \
+        --arg fail_fast "$FAIL_FAST" \
+        '{
+            note: $note,
+            has_gpu_driver: $has_gpu_driver,
+            gpu_count: $gpu_count,
+            has_docker: $has_docker,
+            has_nvidia_container_runtime: $has_nvidia_container_runtime,
+            has_dcgm: $has_dcgm,
+            auto_install_enabled: ($auto_install == "1"),
+            fail_fast_enabled: ($fail_fast == "1")
+        }'
+}
+
 has_gpu_driver=false
 gpu_count_now=0
 if has_cmd nvidia-smi && nvidia-smi >/dev/null 2>&1; then
@@ -30,22 +54,8 @@ has_cmd dcgmi && has_dcgm=true
 
 if [ "$has_gpu_driver" != true ]; then
     log_info "No working NVIDIA GPU driver detected; runtime checks are not required."
-    jq -n \
-        --arg note "no working GPU driver" \
-        --argjson has_gpu_driver false \
-        --argjson gpu_count 0 \
-        --argjson has_docker "$has_docker" \
-        --argjson has_nvidia_container_runtime "$nvidia_runtime" \
-        --argjson has_dcgm "$has_dcgm" \
-        '{
-            note: $note,
-            has_gpu_driver: $has_gpu_driver,
-            gpu_count: $gpu_count,
-            has_docker: $has_docker,
-            has_nvidia_container_runtime: $has_nvidia_container_runtime,
-            has_dcgm: $has_dcgm
-        }' | emit_json "runtime-sanity" "skipped"
-    exit 0
+    skip_module_with_data "runtime-sanity" "no working GPU driver" \
+        "$(_build_sanity_json "no working GPU driver")"
 fi
 
 # GPU driver exists: check if container runtime is ready.
@@ -73,47 +83,11 @@ fi
 
 if [ "$FAIL_FAST" = "1" ] && [ "$nvidia_runtime" != true ]; then
     log_error "Fail-fast enabled and NVIDIA container runtime is missing."
-    jq -n \
-        --arg note "$note" \
-        --argjson has_gpu_driver true \
-        --argjson gpu_count "$gpu_count_now" \
-        --argjson has_docker "$has_docker" \
-        --argjson has_nvidia_container_runtime "$nvidia_runtime" \
-        --argjson has_dcgm "$has_dcgm" \
-        --arg auto_install "$AUTO_INSTALL" \
-        --arg fail_fast "$FAIL_FAST" \
-        '{
-            note: $note,
-            has_gpu_driver: $has_gpu_driver,
-            gpu_count: $gpu_count,
-            has_docker: $has_docker,
-            has_nvidia_container_runtime: $has_nvidia_container_runtime,
-            has_dcgm: $has_dcgm,
-            auto_install_enabled: ($auto_install == "1"),
-            fail_fast_enabled: ($fail_fast == "1")
-        }' | emit_json "runtime-sanity" "error"
+    _build_sanity_json "$note" | emit_json "runtime-sanity" "error"
     exit 1
 fi
 
-jq -n \
-    --arg note "$note" \
-    --argjson has_gpu_driver true \
-    --argjson gpu_count "$gpu_count_now" \
-    --argjson has_docker "$has_docker" \
-    --argjson has_nvidia_container_runtime "$nvidia_runtime" \
-    --argjson has_dcgm "$has_dcgm" \
-    --arg auto_install "$AUTO_INSTALL" \
-    --arg fail_fast "$FAIL_FAST" \
-    '{
-        note: $note,
-        has_gpu_driver: $has_gpu_driver,
-        gpu_count: $gpu_count,
-        has_docker: $has_docker,
-        has_nvidia_container_runtime: $has_nvidia_container_runtime,
-        has_dcgm: $has_dcgm,
-        auto_install_enabled: ($auto_install == "1"),
-        fail_fast_enabled: ($fail_fast == "1")
-    }' | emit_json "runtime-sanity" "$status"
+_build_sanity_json "$note" | emit_json "runtime-sanity" "$status"
 
 if [ "$status" = "ok" ]; then
     log_ok "Runtime sanity: ready (GPU/container runtime/DCGM checks complete)"

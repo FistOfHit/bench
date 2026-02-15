@@ -34,8 +34,8 @@ fi
 
 # ── SUID binaries ──
 # Restrict to known paths to avoid unbounded scan on large filesystems (e.g. multi-TB /)
-# -xdev: don't cross filesystem boundaries; timeout: safety net
-_suid_out=$(timeout 30 find /usr /bin /sbin /opt /var -xdev -perm -4000 -type f 2>/dev/null | head -50) || true
+# -xdev: don't cross filesystem boundaries; timeout: safety net for slow NFS/Lustre mounts.
+_suid_out=$(timeout "${SUID_SCAN_TIMEOUT:-30}" find /usr /bin /sbin /opt /var -xdev -perm -4000 -type f 2>/dev/null | head -50) || true
 if [ -n "$_suid_out" ]; then
     suid_json=$(printf '%s\n' "$_suid_out" | json_array_from_lines "[]")
 else

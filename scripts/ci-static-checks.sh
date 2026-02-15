@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# ci-static-checks.sh — Run bash syntax checks and pre-commit hooks for CI
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

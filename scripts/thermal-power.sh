@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# thermal-power.sh — GPU/CPU thermals, fan speeds, PSU, throttle detection (V1.1)
-# Added: Virtualization detection - skips physical sensors in VMs
+# thermal-power.sh — GPU/CPU thermals, fan speeds, PSU, throttle detection
+# VM-aware: skips IPMI/physical sensors when running virtualized
 SCRIPT_NAME="thermal-power"
 source "$(dirname "$0")/../lib/common.sh"
 

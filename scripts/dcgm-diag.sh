@@ -5,11 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== DCGM Diagnostics ==="
 
-if ! has_cmd dcgmi; then
-    log_warn "dcgmi not found — skipping"
-    echo '{"note":"dcgmi not available"}' | emit_json "dcgm-diag" "skipped"
-    exit 0
-fi
+has_cmd dcgmi || skip_module "dcgm-diag" "dcgmi not available"
 
 # In VMs, DCGM diag often hangs or is unsupported — use shorter timeout and treat failure as skip
 # Quick mode (HPC_QUICK=1): run only level 1 (r1) with short timeout to verify suite end-to-end
@@ -51,9 +47,7 @@ done
 
 if [ "$diag_level" -eq 0 ]; then
     if is_virtualized; then
-        log_warn "All attempted DCGM levels failed in VM — skipping after attempted diagnostics"
-        echo '{"note":"all attempted DCGM levels failed in VM after diagnostics attempt","skip_reason":"vm"}' | emit_json "dcgm-diag" "skipped"
-        exit 0
+        skip_module "dcgm-diag" "all attempted DCGM levels failed in VM after diagnostics attempt"
     fi
     log_error "All DCGM diag levels failed"
     echo "{\"error\":\"all levels failed\",\"output\":$(json_str "$diag_output")}" | emit_json "dcgm-diag" "error"

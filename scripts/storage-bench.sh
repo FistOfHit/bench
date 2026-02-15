@@ -5,11 +5,7 @@ source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== Storage Benchmark (fio) ==="
 
-if ! has_cmd fio; then
-    log_warn "fio not found — skipping"
-    echo '{"note":"fio not available"}' | emit_json "storage-bench" "skipped"
-    exit 0
-fi
+has_cmd fio || skip_module "storage-bench" "fio not available"
 
 # ── Test directory ──
 TEST_DIR="${FIO_TEST_DIR:-/tmp/hpc-fio-test}"
@@ -31,13 +27,14 @@ else
     FIO_SIZE="4G"
 fi
 
-# Quick mode: 5s per profile and only 2 profiles (seq-read + rand-4k-read) to verify fio fast. Full: 60s, 7 profiles.
+# Quick mode: short runtime per profile, only 2 profiles.
+# Full mode: 60s runtime per profile, all 7 profiles.
+# Defaults sourced from conf/defaults.sh.
 if [ "${HPC_QUICK:-0}" = "1" ]; then
-    FIO_RUNTIME=5
-    FIO_QUICK_PROFILES=1   # 1 = run only 2 minimal profiles
+    FIO_RUNTIME="${STORAGE_BENCH_DURATION_QUICK:-5}"
+    FIO_QUICK_PROFILES=1
 else
-    FIO_RUNTIME=${HPC_QUICK:+15}
-    FIO_RUNTIME=${FIO_RUNTIME:-60}
+    FIO_RUNTIME="${STORAGE_BENCH_DURATION_FULL:-60}"
     FIO_QUICK_PROFILES=0
 fi
 FIO_COMMON="--directory=$TEST_DIR --size=$FIO_SIZE --runtime=$FIO_RUNTIME --time_based --group_reporting"
@@ -54,7 +51,7 @@ run_fio() {
 
     # Use fio's native --output flag to write JSON directly to file
     # This avoids stdout contamination from progress/status messages
-    timeout 120 fio --name="$name" $FIO_COMMON --output-format=json --output="$output_file" "$@" \
+    timeout "${FIO_PROFILE_TIMEOUT:-120}" fio --name="$name" $FIO_COMMON --output-format=json --output="$output_file" "$@" \
         2>>"${HPC_LOG_DIR}/fio-${name}.log" || true
 
     # Parse the JSON output
@@ -130,11 +127,5 @@ RESULT=$(jq -n \
         sequential_read_128k_qd128: $seq_deep
     }')
 
-echo "$RESULT" | emit_json "storage-bench" "ok"
-log_ok "Storage benchmarks complete"
-echo "$RESULT" | jq '{
-    "seq_read_MB/s": .sequential_read_1M.read_bw_mbps,
-    "seq_write_MB/s": .sequential_write_1M.write_bw_mbps,
-    "rand_4k_read_IOPS": .random_4k_read.read_iops,
-    "rand_4k_write_IOPS": .random_4k_write.write_iops
-}'
+finish_module "storage-bench" "ok" "$RESULT" \
+    '{"seq_read_MB/s": .sequential_read_1M.read_bw_mbps, "seq_write_MB/s": .sequential_write_1M.write_bw_mbps, "rand_4k_read_IOPS": .random_4k_read.read_iops, "rand_4k_write_IOPS": .random_4k_write.write_iops}'

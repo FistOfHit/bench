@@ -78,7 +78,7 @@ if [ "${HPC_CI:-0}" = "1" ]; then
 fi
 
 # Read version from single source of truth
-HPC_BENCH_VERSION=$(cat "${HPC_BENCH_ROOT}/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+HPC_BENCH_VERSION=$(tr -d '[:space:]' < "${HPC_BENCH_ROOT}/VERSION" 2>/dev/null || echo "unknown")
 export HPC_BENCH_VERSION
 
 # ── Exclusive lock — prevent concurrent runs clobbering results ──
@@ -271,11 +271,10 @@ run_module() {
 
     echo ""
     log_info "━━━ [$TOTAL] Running: $name ━━━"
-    local mod_start=$(date +%s)
-    local missing
+    local mod_start mod_end mod_duration missing
+    mod_start=$(date +%s)
     missing=$(module_missing_cmds "$name")
     if [ -n "$missing" ]; then
-        local mod_end mod_duration
         mod_end=$(date +%s)
         mod_duration=$((mod_end - mod_start))
         skip_module_due_prereq "$name" "missing commands: $missing" "$mod_duration"
@@ -292,8 +291,8 @@ run_module() {
     local rc=$?
     set -eo pipefail
 
-    local mod_end=$(date +%s)
-    local mod_duration=$((mod_end - mod_start))
+    mod_end=$(date +%s)
+    mod_duration=$((mod_end - mod_start))
     record_module_result "$name" "$rc" "$mod_duration"
 }
 
@@ -408,26 +407,26 @@ done
 # PHASE 3: Benchmarks (manifest phase=3, skipped in smoke mode)
 # ═══════════════════════════════════════════
 if [ "${HPC_SMOKE:-0}" != "1" ]; then
-log_info "╔══════════════════════════════════════╗"
-log_info "║  PHASE 3: Benchmarks                 ║"
-log_info "╚══════════════════════════════════════╝"
-mapfile -t PHASE3_SCRIPTS < <(manifest_phase_scripts 3 "$HPC_IS_ROOT")
-for script in "${PHASE3_SCRIPTS[@]}"; do
-    run_module "${SCRIPT_DIR}/${script}"
-done
+    log_info "╔══════════════════════════════════════╗"
+    log_info "║  PHASE 3: Benchmarks                 ║"
+    log_info "╚══════════════════════════════════════╝"
+    mapfile -t PHASE3_SCRIPTS < <(manifest_phase_scripts 3 "$HPC_IS_ROOT")
+    for script in "${PHASE3_SCRIPTS[@]}"; do
+        run_module "${SCRIPT_DIR}/${script}"
+    done
 fi
 
 # ═══════════════════════════════════════════
 # PHASE 4: Diagnostics (manifest phase=4, skipped in smoke mode)
 # ═══════════════════════════════════════════
 if [ "${HPC_SMOKE:-0}" != "1" ]; then
-log_info "╔══════════════════════════════════════╗"
-log_info "║  PHASE 4: Diagnostics                ║"
-log_info "╚══════════════════════════════════════╝"
-mapfile -t PHASE4_SCRIPTS < <(manifest_phase_scripts 4 "$HPC_IS_ROOT")
-for script in "${PHASE4_SCRIPTS[@]}"; do
-    run_module "${SCRIPT_DIR}/${script}"
-done
+    log_info "╔══════════════════════════════════════╗"
+    log_info "║  PHASE 4: Diagnostics                ║"
+    log_info "╚══════════════════════════════════════╝"
+    mapfile -t PHASE4_SCRIPTS < <(manifest_phase_scripts 4 "$HPC_IS_ROOT")
+    for script in "${PHASE4_SCRIPTS[@]}"; do
+        run_module "${SCRIPT_DIR}/${script}"
+    done
 fi
 
 # ═══════════════════════════════════════════
