@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# nvbandwidth.sh — GPU bandwidth testing (H2D, D2H, D2D)
+# nvbandwidth.sh -- GPU bandwidth testing (H2D, D2H, D2D)
+# Phase: 3 (benchmark)
+# Requires: jq, timeout, python3
+# Emits: nvbandwidth.json
 SCRIPT_NAME="nvbandwidth"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -17,11 +20,11 @@ if [ ! -x "$NVB_BIN" ]; then
         NVB_BIN=$(command -v nvbandwidth)
         log_info "Found nvbandwidth in PATH: $NVB_BIN"
     else
-        # 2. Check common CUDA locations
+        # 2. Check common CUDA locations using shared detection
+        CUDA_HOME=$(detect_cuda_home)
         NVB_FOUND=""
         for candidate in \
-            "${CUDA_HOME:-/usr/local/cuda}/bin/nvbandwidth" \
-            "/usr/local/cuda/bin/nvbandwidth" \
+            "${CUDA_HOME}/bin/nvbandwidth" \
             "/usr/bin/nvbandwidth" \
             ; do
             if [ -x "$candidate" ]; then
@@ -29,15 +32,6 @@ if [ ! -x "$NVB_BIN" ]; then
                 break
             fi
         done
-        # Also try versioned CUDA installs
-        if [ -z "$NVB_FOUND" ]; then
-            for candidate in /usr/local/cuda-*/bin/nvbandwidth; do
-                if [ -x "$candidate" ]; then
-                    NVB_FOUND="$candidate"
-                    break
-                fi
-            done
-        fi
 
         if [ -n "$NVB_FOUND" ]; then
             NVB_BIN="$NVB_FOUND"
@@ -52,11 +46,10 @@ if [ ! -x "$NVB_BIN" ]; then
             log_warn "nvbandwidth not found in PATH or common locations, attempting git clone..."
             rm -rf "$NVB_DIR"
             if git clone https://github.com/NVIDIA/nvbandwidth.git "$NVB_DIR" 2>/dev/null; then
-                cd "$NVB_DIR"
-                mkdir -p build && cd build
-                CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
+                cd "$NVB_DIR" || exit 1
+                mkdir -p build && cd build || exit 1
                 if cmake .. -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" 2>&1 | tail -5 && \
-                   make -j$(nproc) 2>&1 | tail -5; then
+                   make -j"$(nproc)" 2>&1 | tail -5; then
                     NVB_BIN="${NVB_DIR}/build/nvbandwidth"
                 else
                     skip_module "nvbandwidth" "build failed — install CUDA toolkit with nvbandwidth or ensure internet and build deps"
@@ -161,12 +154,11 @@ d2d_write=$(run_nvb_test "device_to_device_memcpy_write_ce" 2>/dev/null || echo 
 d2d_bidir=$(run_nvb_test "device_to_device_bidirectional_memcpy_read_ce" 2>/dev/null || echo '{}')
 
 # Validate JSON before passing to --argjson (avoid crash on empty/invalid output)
-for _var in h2d d2h d2d d2d_write d2d_bidir; do
-    eval "_val=\$$_var"
-    if [ -z "$_val" ] || ! echo "$_val" | jq . >/dev/null 2>&1; then
-        eval "$_var='{}'"
-    fi
-done
+h2d=$(json_compact_or "$h2d" '{}')
+d2h=$(json_compact_or "$d2h" '{}')
+d2d=$(json_compact_or "$d2d" '{}')
+d2d_write=$(json_compact_or "$d2d_write" '{}')
+d2d_bidir=$(json_compact_or "$d2d_bidir" '{}')
 RESULT=$(jq -n \
     --argjson h2d "$h2d" \
     --argjson d2h "$d2h" \

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# storage-bench.sh — fio storage benchmarks (sequential, random, mixed profiles)
+# storage-bench.sh -- fio storage benchmarks (sequential, random, mixed profiles)
+# Phase: 3 (benchmark)
+# Requires: jq, timeout
+# Emits: storage-bench.json
 SCRIPT_NAME="storage-bench"
 source "$(dirname "$0")/../lib/common.sh"
 

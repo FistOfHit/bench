@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# thermal-power.sh — GPU/CPU thermals, fan speeds, PSU, throttle detection
+# thermal-power.sh -- GPU/CPU thermals, fan speeds, PSU, throttle detection
+# Phase: 4 (diagnostic)
+# Requires: jq, awk
+# Emits: thermal-power.json
 # VM-aware: skips IPMI/physical sensors when running virtualized
 SCRIPT_NAME="thermal-power"
 source "$(dirname "$0")/../lib/common.sh"

@@ -3,26 +3,16 @@
 # Run: bats tests/common_helpers.bats
 # Install bats: sudo apt-get install bats  (or: npm install -g bats)
 
+load helpers
+
 # ── Test setup ──
 setup() {
-    export HPC_BENCH_ROOT="${BATS_TEST_DIRNAME}/.."
-    export HPC_RESULTS_DIR="$(mktemp -d)"
-    export HPC_LOG_DIR="${HPC_RESULTS_DIR}/logs"
-    export HPC_WORK_DIR="$(mktemp -d)"
-    export SCRIPT_NAME="test-module"
-    mkdir -p "$HPC_LOG_DIR"
-
-    # Source common.sh (sets up paths, loads defaults, creates dirs)
-    source "${HPC_BENCH_ROOT}/lib/common.sh"
-
-    # Override common.sh's EXIT trap and strict mode: bats manages its own
-    # subshell lifecycle and set -e behavior; common.sh's settings interfere.
-    trap - EXIT
-    set +euo pipefail
+    setup_test_env "test-module"
+    source_common
 }
 
 teardown() {
-    rm -rf "$HPC_RESULTS_DIR" "$HPC_WORK_DIR"
+    teardown_test_env
 }
 
 # ═══════════════════════════════════════════
@@ -256,30 +246,6 @@ GPU 2: FAIL")
 @test "sanitize_json_str: output is valid JSON" {
     result=$(sanitize_json_str 'test with "quotes" and backslash\\')
     echo "$result" | jq . >/dev/null 2>&1
-}
-
-# ═══════════════════════════════════════════
-# json_str (alias for sanitize_json_str)
-# ═══════════════════════════════════════════
-
-@test "json_str: behaves identically to sanitize_json_str" {
-    a=$(sanitize_json_str 'say "hello"')
-    b=$(json_str 'say "hello"')
-    [ "$a" = "$b" ]
-}
-
-@test "json_str: strips control characters like sanitize_json_str" {
-    input=$'tab\there'
-    result=$(json_str "$input")
-    [ "$result" = '"tabhere"' ]
-}
-
-@test "json_str: output has no trailing newline" {
-    # Verify no trailing newline (was a bug in the old standalone json_str)
-    raw=$(json_str "test")
-    # If there's a trailing newline, wc -l will be > 0
-    lines=$(printf '%s' "$raw" | wc -l | tr -d '[:space:]')
-    [ "$lines" = "0" ]
 }
 
 # ═══════════════════════════════════════════

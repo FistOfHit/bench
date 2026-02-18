@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# stream-bench.sh — STREAM memory bandwidth benchmark
+# stream-bench.sh -- STREAM memory bandwidth benchmark
+# Phase: 3 (benchmark)
+# Requires: jq, timeout, awk
+# Emits: stream-bench.json
 SCRIPT_NAME="stream-bench"
 source "$(dirname "$0")/../lib/common.sh"
 

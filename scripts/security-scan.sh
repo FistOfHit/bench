@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# security-scan.sh — SSH config audit, services, SUID, kernel params, ports
+# security-scan.sh -- SSH config audit, services, SUID, kernel params, ports
+# Phase: 4 (diagnostic)
+# Requires: jq, awk, grep
+# Emits: security-scan.json
 SCRIPT_NAME="security-scan"
 source "$(dirname "$0")/../lib/common.sh"
 

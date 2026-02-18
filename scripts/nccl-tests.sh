@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# nccl-tests.sh — Build and run NCCL collective tests (single-node)
+# nccl-tests.sh -- Build and run NCCL collective tests (single-node)
+# Phase: 3 (benchmark)
+# Requires: jq, timeout, awk
+# Emits: nccl-tests.json
 SCRIPT_NAME="nccl-tests"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -14,6 +17,10 @@ NGPUS=$(gpu_count)
 NCCL_CHECK=$(ldconfig -p 2>/dev/null | grep libnccl || find /usr -name 'libnccl.so*' 2>/dev/null | head -1 || echo "")
 [ -z "$NCCL_CHECK" ] && skip_module "nccl-tests" "NCCL library not installed"
 
+# ── CUDA pre-flight: ensure nvidia-uvm is loaded (avoids error 802) ──
+if is_root; then modprobe nvidia-uvm 2>/dev/null || true; fi
+nvidia-smi -q -d MEMORY >/dev/null 2>&1 || true
+
 NCCL_DIR="${HPC_WORK_DIR}/nccl-tests"
 NCCL_BUILD="${NCCL_DIR}/build"
 
@@ -22,13 +29,7 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
     log_info "Building nccl-tests..."
 
     # Find CUDA path
-    CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
-    if [ ! -d "$CUDA_HOME" ]; then
-        nvcc_path="$(cmd_path nvcc)"
-        if [ -n "$nvcc_path" ]; then
-            CUDA_HOME="$(dirname "$(dirname "$nvcc_path")")"
-        fi
-    fi
+    CUDA_HOME=$(detect_cuda_home)
 
     # Prefer bundled source for repeatability; fallback to online clone.
     # Note: clone_or_copy_source prefers git; we reverse priority here by
@@ -45,7 +46,7 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
         exit 1
     fi
 
-    cd "$NCCL_DIR"
+    cd "$NCCL_DIR" || exit 1
 
     # Build without MPI dependency; tests are launched as single process with -g <num_gpus>.
     MPI_FLAG="MPI=0"
@@ -61,7 +62,8 @@ if [ ! -x "${NCCL_BUILD}/all_reduce_perf" ]; then
         log_warn "Could not detect GPU compute capability; using Makefile default NVCC_GENCODE"
     fi
 
-    if ! make -j$(nproc) CUDA_HOME="$CUDA_HOME" $MPI_FLAG ${NVCC_GENCODE:+NVCC_GENCODE="$NVCC_GENCODE"} 2>&1 | tail -10; then
+    if ! make -j"$(nproc)" CUDA_HOME="$CUDA_HOME" $MPI_FLAG \
+            ${NVCC_GENCODE:+NVCC_GENCODE="$NVCC_GENCODE"} 2>&1 | tail -10; then
         log_error "Failed to build nccl-tests"
         echo '{"error":"build failed"}' | emit_json "nccl-tests" "error"
         exit 1
@@ -122,6 +124,9 @@ run_nccl_test() {
             env NCCL_P2P_DISABLE=1 NCCL_P2P_LEVEL=LOC NCCL_IB_DISABLE=1 \
             "$binary" -b "$MIN_BYTES" -e "$MAX_BYTES" -f "$STEP_FACTOR" -g "$run_gpus" -n "${NCCL_ITERS:-20}" -w "${NCCL_WARMUP:-5}" 2>&1) || true
     fi
+
+    # Save raw output for debugging (parser issues, format changes)
+    echo "$output" > "${HPC_LOG_DIR}/nccl-${test_name}-stdout.log" 2>/dev/null || true
 
     # Parse: extract the row with max message size for bus bandwidth
     # Bundled format (7 cols): size  count  type  time(us)  algbw  busbw  error
@@ -205,7 +210,16 @@ fi
 
 status="ok"
 [ "${error_count:-0}" -gt 0 ] 2>/dev/null && status="warn"
-[ "$peak_busbw" = "0" ] && [ "${error_count:-0}" -gt 0 ] 2>/dev/null && status="error"
+# Zero bandwidth with multiple GPUs and no detected errors is a parsing or
+# silent-failure problem — report warn so the suite doesn't silently pass.
+if [ "$peak_busbw" = "0" ] && [ "$NGPUS" -ge 2 ]; then
+    if [ "${error_count:-0}" -gt 0 ] 2>/dev/null; then
+        status="error"
+    else
+        status="warn"
+        log_warn "Marking NCCL as warn: busbw=0 with $NGPUS GPUs — results missing or unparseable"
+    fi
+fi
 
 RESULT=$(jq -n \
     --argjson tests "$tests_output" \

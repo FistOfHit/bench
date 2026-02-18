@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# ib-tests.sh — InfiniBand perftest (loopback/single-node); skips in VMs
+# ib-tests.sh -- InfiniBand perftest (loopback/single-node); skips in VMs
+# Phase: 3 (benchmark)
+# Requires: jq, timeout, awk
+# Emits: ib-tests.json
 SCRIPT_NAME="ib-tests"
 source "$(dirname "$0")/../lib/common.sh"
 

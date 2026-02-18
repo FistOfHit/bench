@@ -26,6 +26,11 @@ Bootstrap installs jq and other core packages when run as root with network acce
 
 **This suite is designed for bare-metal HPC servers.** Virtual machines (VMs) are not the intended target: several benchmarks (DCGM, nvbandwidth, HPL-MxP, InfiniBand, BMC) require real hardware or full GPU/PCIe topology and will skip or may fail in VMs. If you run on a VM anyway, the suite will skip unsupported modules and complete with a reduced set of results; use `HPC_QUICK=1` for shorter storage runs when iterating (e.g. CI or smoke tests). See [CHANGELOG.md](CHANGELOG.md) for version history and VM-related behavior and fixes.
 
+### VM behavior (why some modules skip)
+
+- **DCGM diagnostics (`dcgm-diag`):** The script runs `dcgmi diag` with a shorter per-level timeout (120s) when virtualized. DCGM is built for bare-metal datacenter GPUs; in VMs with GPU passthrough, diagnostics often take much longer, hang, or fail with errors such as "unsupported Cuda version" (exit 226). If every attempted level (3, 2, 1) fails or times out, the module is skipped with a note that all DCGM levels failed in the VM.
+- **HPL-MxP (`hpl-mxp`):** The benchmark runs inside a GPU-capable container. In VMs, the container process often exits with **SIGPIPE (exit 141)** when writing to stdout—e.g. the pipe to the host breaks due to timeout/container runtime behavior with GPU passthrough. The script treats that as a VM-specific skip so the suite can still pass; use `HPC_HPL_MXP_VM_STRICT=1` to treat it as a hard failure instead.
+
 ## Quick start
 
 ```bash

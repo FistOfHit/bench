@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# network-inventory.sh — NICs, InfiniBand HCAs, link speeds, MTU, bonding, RoCE
+# network-inventory.sh -- NICs, InfiniBand HCAs, link speeds, MTU, bonding, RoCE
+# Phase: 2 (discovery)
+# Requires: jq, awk
+# Emits: network-inventory.json
 SCRIPT_NAME="network-inventory"
 source "$(dirname "$0")/../lib/common.sh"
 

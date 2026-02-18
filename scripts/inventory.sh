@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# inventory.sh — CPU, RAM, storage, kernel, OS, network basics
+# inventory.sh -- CPU, RAM, storage, kernel, OS, network basics
+# Phase: 2 (discovery)
+# Requires: jq, awk
+# Emits: inventory.json
 SCRIPT_NAME="inventory"
 source "$(dirname "$0")/../lib/common.sh"
 

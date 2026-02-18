@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# filesystem-diag.sh — Mount points, FS types, RAID, LVM, NFS/Lustre/GPFS
+# filesystem-diag.sh -- Mount points, FS types, RAID, LVM, NFS/Lustre/GPFS
+# Phase: 4 (diagnostic)
+# Requires: jq, awk
+# Emits: filesystem-diag.json
 SCRIPT_NAME="filesystem-diag"
 source "$(dirname "$0")/../lib/common.sh"
 

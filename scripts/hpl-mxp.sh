@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# hpl-mxp.sh — HPL-MxP (mixed-precision) via NVIDIA HPC Benchmarks container
+# hpl-mxp.sh -- HPL-MxP (mixed-precision) via NVIDIA HPC Benchmarks container
+# Phase: 3 (benchmark)
+# Requires: jq, timeout, awk
+# Emits: hpl-mxp.json
 SCRIPT_NAME="hpl-mxp"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -29,7 +32,9 @@ if docker_has_nvidia_runtime; then
 elif has_cmd nvidia-docker; then
     CONTAINER_CMD="nvidia-docker"
 else
-    skip_module "hpl-mxp" "no GPU-capable container runtime"
+    # Fall back to shared detection (podman with GPU support, etc.)
+    CONTAINER_CMD=$(detect_container_runtime)
+    [ -z "$CONTAINER_CMD" ] && skip_module "hpl-mxp" "no GPU-capable container runtime"
 fi
 
 # In VMs, Docker/pipe often causes SIGPIPE (exit 141); treat as skipped so suite can pass
@@ -137,39 +142,7 @@ fi
 # Create HPL config
 HPL_CFG="${HPC_WORK_DIR}/hpl-mxp"
 mkdir -p "$HPL_CFG"
-cat > "${HPL_CFG}/HPL.dat" <<EOF
-HPLinpack benchmark input file
-Innovative Computing Laboratory, University of Tennessee
-HPL.out      output file name (if any)
-6            device out (6=stdout,7=stderr,file)
-1            # of problems sizes (N)
-$N           Ns
-1            # of NBs
-$NB          NBs
-0            PMAP process mapping (0=Row-,1=Column-major)
-1            # of process grids (P x Q)
-$P           Ps
-$Q           Qs
-16.0         threshold
-1            # of panel fact
-2            PFACTs (0=left, 1=Crout, 2=Right)
-1            # of recursive stopping criterium
-4            NBMINs (>= 1)
-1            # of panels in recursion
-2            NDIVs
-1            # of recursive panel fact.
-1            RFACTs (0=left, 1=Crout, 2=Right)
-1            # of broadcast
-1            BCASTs (0=1rg,1=1rM,2=2rg,3=2rM,4=Lng,5=LnM)
-1            # of lookahead depth
-1            DEPTHs (>=0)
-2            SWAP (0=bin-exch,1=long,2=mix)
-64           swapping threshold
-0            L1 in (0=transposed,1=no-transposed) form
-0            U  in (0=transposed,1=no-transposed) form
-1            Equilibration (0=no,1=yes)
-8            memory alignment in double (> 0)
-EOF
+generate_hpl_dat "${HPL_CFG}/HPL.dat" "$N" "$NB" "$P" "$Q"
 
 # ── Run HPL-MxP ──
 # Quick mode: short timeout; full: base 1800s + 1s per GB of total GPU memory

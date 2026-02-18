@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# network-diag.sh — Firewall rules, open ports, routing, DNS
+# network-diag.sh -- Firewall rules, open ports, routing, DNS
+# Phase: 4 (diagnostic)
+# Requires: jq, awk
+# Emits: network-diag.json
 SCRIPT_NAME="network-diag"
 source "$(dirname "$0")/../lib/common.sh"
 

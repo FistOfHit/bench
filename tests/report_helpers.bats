@@ -5,21 +5,17 @@
 # Note: score_module and run_report_scoring tests use `run bash -c` to avoid
 # interference from lib/common.sh's EXIT trap with bats' subshell management.
 
+load helpers
+
 # ── Test setup ──
 setup() {
-    export HPC_BENCH_ROOT="${BATS_TEST_DIRNAME}/.."
-    export HPC_RESULTS_DIR="$(mktemp -d)"
-    export HPC_LOG_DIR="${HPC_RESULTS_DIR}/logs"
-    export HPC_WORK_DIR="$(mktemp -d)"
-    export SCRIPT_NAME="test-report"
-    mkdir -p "$HPC_LOG_DIR"
-
-    source "${HPC_BENCH_ROOT}/lib/common.sh"
+    setup_test_env "test-report"
+    source_common
     source "${HPC_BENCH_ROOT}/lib/report-common.sh"
 }
 
 teardown() {
-    rm -rf "$HPC_RESULTS_DIR" "$HPC_WORK_DIR"
+    teardown_test_env
 }
 
 # Helper: run score_module in an isolated bash process to avoid EXIT trap conflicts.

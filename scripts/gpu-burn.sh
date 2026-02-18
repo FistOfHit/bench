@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# gpu-burn.sh — GPU stress test using gpu-burn
+# gpu-burn.sh -- GPU stress test using gpu-burn
+# Phase: 3 (benchmark)
+# Requires: jq, timeout, awk
+# Emits: gpu-burn.json
 # Builds from source (online or bundled), runs burn, parses GFLOPS and temps
 SCRIPT_NAME="gpu-burn"
 source "$(dirname "$0")/../lib/common.sh"
@@ -8,17 +11,34 @@ log_info "=== GPU Burn Stress Test ==="
 
 require_gpu "gpu-burn"
 
-# Quick mode (HPC_QUICK=1): 10s burn to verify suite (≥10s needed for GFLOPS output);
-# VMs: shorter; else 5 min default. Override with GPU_BURN_DURATION.
-# Defaults are in conf/defaults.sh.
+# Quick mode (HPC_QUICK=1): short burn to verify suite; VMs: shorter; else 5 min.
+# Override with GPU_BURN_DURATION.  Defaults are in conf/defaults.sh.
+# Multi-GPU systems (especially large-memory GPUs like A100-80GB) need extra time:
+#   - Each GPU allocates memory sequentially (~3-5s per GPU)
+#   - gpu-burn only emits GFLOPS in progress lines that require actual burn time
+# Scale quick-mode duration: base 10s + 5s per GPU (e.g. 8 GPUs → 50s).
+NGPUS=$(gpu_count)
 if [ "${HPC_QUICK:-0}" = "1" ]; then
-    BURN_DURATION=${GPU_BURN_DURATION:-${GPU_BURN_DURATION_QUICK}}
+    _base_quick=${GPU_BURN_DURATION_QUICK:-10}
+    _scaled=$(( _base_quick + NGPUS * 5 ))
+    BURN_DURATION=${GPU_BURN_DURATION:-$_scaled}
 elif is_virtualized; then
     BURN_DURATION=${GPU_BURN_DURATION:-${GPU_BURN_DURATION_VM}}
 else
     BURN_DURATION=${GPU_BURN_DURATION:-${GPU_BURN_DURATION_FULL}}
 fi
 BURN_DIR="${HPC_WORK_DIR}/gpu-burn"
+
+# ── CUDA pre-flight: ensure nvidia-uvm module is loaded ──
+# Error 802 (CUDA_ERROR_NOT_INITIALIZED / system not yet initialized) commonly
+# occurs on VMs or freshly booted machines when the nvidia-uvm kernel module is
+# not loaded.  Loading it + a warmup nvidia-smi call resolves the vast majority
+# of these failures.
+if is_root; then
+    modprobe nvidia-uvm 2>/dev/null || true
+fi
+# Warmup: nvidia-smi forces CUDA driver init; avoids cold-start error 802
+nvidia-smi -q -d MEMORY >/dev/null 2>&1 || true
 
 # ── Pre-burn temps ──
 pre_temps=$(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]')
@@ -81,15 +101,17 @@ log_info "gpu-burn exited with rc=$burn_rc"
 log_info "gpu-burn output length: ${#burn_output} bytes"
 
 # ── Early exit: CUDA init failure (e.g. vGPU without compute, driver mismatch) ──
-if echo "$burn_output" | grep -qi "Couldn't init CUDA\|cuInit returned\|No CUDA devices"; then
-    _init_error=$(echo "$burn_output" | grep -i "Couldn't init CUDA\|cuInit returned\|No CUDA devices" | head -1 | tr -d '[:cntrl:]')
+# Match "cuInit returned <non-zero>" but NOT "cuInit returned 0 (no error)".
+if echo "$burn_output" | grep -qiE "Couldn't init CUDA|No CUDA devices" || \
+   echo "$burn_output" | grep -qE 'cuInit returned [1-9][0-9]*'; then
+    _init_error=$(echo "$burn_output" | grep -iE "Couldn't init CUDA|No CUDA devices|cuInit returned [1-9]" | head -1 | tr -d '[:cntrl:]')
     log_error "CUDA initialization failed: $_init_error"
     RESULT=$(jq -n \
         --arg dur "$BURN_DURATION" \
         --arg err "$_init_error" \
         '{duration_seconds: ($dur | tonumber), status: "error", error: $err, note: "CUDA could not initialize — driver mismatch or vGPU without compute capability"}')
     finish_module "gpu-burn" "error" "$RESULT" '{status, error}'
-    exit 0
+    exit 1
 fi
 
 # ── Post-burn temps ──
@@ -181,12 +203,63 @@ if [ "$gpu_gflops" = "[]" ]; then
     fi
 fi
 
+# ── Third fallback: newer gpu-burn outputs only "GPU N: OK/FAULTY" with no
+# ──                 GFLOPS at all (short burns, newer builds). Build a
+# ──                 status-only per-GPU array so the JSON result has entries.
+if [ "$gpu_gflops" = "[]" ] || [ -z "$gpu_gflops" ]; then
+    _status_only=$(echo "$burn_output" | awk '
+        /GPU [0-9]+: (OK|FAULTY)/ {
+            match($0, /GPU ([0-9]+)/)
+            idx = substr($0, RSTART+4, RLENGTH-4) + 0
+            st = "ok"; if ($0 ~ /FAULTY/) st = "fail"
+            if (seen[idx]++) next  # deduplicate
+            entries[idx] = sprintf("{\"gpu\":%d,\"gflops\":0,\"status\":\"%s\"}", idx, st)
+            order[++n] = idx
+        }
+        END {
+            printf "["
+            for (i = 1; i <= n; i++) {
+                if (i > 1) printf ","
+                printf "%s", entries[order[i]]
+            }
+            printf "]"
+        }
+    ')
+    if [ -n "$_status_only" ] && [ "$_status_only" != "[]" ]; then
+        gpu_gflops=$(json_compact_or "$_status_only" "[]")
+        log_info "No GFLOPS data in gpu-burn output — built status-only per-GPU results"
+    fi
+fi
+
+# Final safety: ensure gpu_gflops is valid JSON
+gpu_gflops=$(json_compact_or "${gpu_gflops:-[]}" "[]")
+
 # Parse temp log for max temps per GPU
 max_temps="[]"
 max_power="[]"
 if [ -f "$TEMP_LOG" ] && [ "$(wc -l < "$TEMP_LOG")" -gt 1 ]; then
-    max_temps=$(awk -F, 'NR>1 && $3+0>0 {if($3>max[$2]) max[$2]=$3} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_temp_c\":%s}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null) || true
-    max_power=$(awk -F, 'NR>1 && $4+0>0 {if($4>max[$2]) max[$2]=$4} END {first=1; printf "["; for(g in max) {if(!first) printf ","; first=0; printf "{\"gpu\":%s,\"max_power_w\":%.1f}", g, max[g]}; printf "]"}' "$TEMP_LOG" 2>/dev/null) || true
+    max_temps=$(awk -F, '
+        NR>1 && $3+0>0 { if ($3>max[$2]) max[$2]=$3 }
+        END {
+            first=1; printf "["
+            for (g in max) {
+                if (!first) printf ","
+                first=0
+                printf "{\"gpu\":%s,\"max_temp_c\":%s}", g, max[g]
+            }
+            printf "]"
+        }' "$TEMP_LOG" 2>/dev/null) || true
+    max_power=$(awk -F, '
+        NR>1 && $4+0>0 { if ($4>max[$2]) max[$2]=$4 }
+        END {
+            first=1; printf "["
+            for (g in max) {
+                if (!first) printf ","
+                first=0
+                printf "{\"gpu\":%s,\"max_power_w\":%.1f}", g, max[g]
+            }
+            printf "]"
+        }' "$TEMP_LOG" 2>/dev/null) || true
 fi
 
 # Status uses suite-standard values: ok / warn / error / skipped
@@ -202,6 +275,23 @@ _tmp_mt=$(json_tmpfile "gpu_burn_mt" "${max_temps:-[]}" "[]")
 _tmp_mp=$(json_tmpfile "gpu_burn_mp" "${max_power:-[]}" "[]")
 _tmp_gf=$(json_tmpfile "gpu_burn_gf" "${gpu_gflops:-[]}" "[]")
 
+# Save full output to log, then truncate for JSON to avoid ARG_MAX.
+# Keep first 20 + last 40 lines in the JSON; full output in the log file.
+_tmp_full=$(mktemp -p "${HPC_WORK_DIR}" "gpu_burn_full.XXXXXX")
+_tmp_raw=$(mktemp -p "${HPC_WORK_DIR}" "gpu_burn_raw.XXXXXX")
+register_cleanup "$_tmp_full" "$_tmp_raw"
+printf '%s\n' "$burn_output" > "$_tmp_full"
+cp "$_tmp_full" "${HPC_LOG_DIR}/gpu-burn-stdout.log" 2>/dev/null || true
+_total_lines=$(wc -l < "$_tmp_full")
+if [ "$_total_lines" -gt 80 ]; then
+    { head -20 "$_tmp_full"
+      echo "... (${_total_lines} lines total — see logs/gpu-burn-stdout.log for full output) ..."
+      tail -40 "$_tmp_full"
+    } > "$_tmp_raw"
+else
+    cp "$_tmp_full" "$_tmp_raw"
+fi
+
 RESULT=$(jq -n \
     --arg dur "$BURN_DURATION" \
     --arg status "$status" \
@@ -212,7 +302,7 @@ RESULT=$(jq -n \
     --arg pre "$pre_temps" \
     --arg post "$post_temps" \
     --arg results "$gpu_results" \
-    --arg raw_output "$burn_output" \
+    --rawfile raw_output "$_tmp_raw" \
     '{
         duration_seconds: ($dur | tonumber),
         status: $status,

@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# runtime-sanity.sh — Early runtime readiness checks (GPU driver/container runtime/DCGM)
+# runtime-sanity.sh -- Early runtime readiness checks (GPU driver/container runtime/DCGM)
+# Phase: 1 (sanity)
+# Requires: jq
+# Emits: runtime-sanity.json
 SCRIPT_NAME="runtime-sanity"
 source "$(dirname "$0")/../lib/common.sh"
 
 log_info "=== Runtime Sanity Check ==="
 
-AUTO_INSTALL="${HPC_AUTO_INSTALL_CONTAINER_RUNTIME:-0}"
+# Default auto-install to enabled when running as root — bootstrap should have
+# already handled Docker + nvidia-container-toolkit, but this is a safety net.
+if [ "$(id -u)" -eq 0 ]; then
+    AUTO_INSTALL="${HPC_AUTO_INSTALL_CONTAINER_RUNTIME:-1}"
+else
+    AUTO_INSTALL="${HPC_AUTO_INSTALL_CONTAINER_RUNTIME:-0}"
+fi
 FAIL_FAST="${HPC_FAIL_FAST_RUNTIME:-0}"
 
 # Build the runtime-sanity JSON payload (called from multiple exit paths).

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# software-audit.sh — CUDA, cuDNN, NCCL, MPI, container runtime, fabric manager, etc.
+# software-audit.sh -- CUDA, cuDNN, NCCL, MPI, container runtime, fabric manager, etc.
+# Phase: 2 (discovery)
+# Requires: jq, awk, grep
+# Emits: software-audit.json
 SCRIPT_NAME="software-audit"
 source "$(dirname "$0")/../lib/common.sh"
 

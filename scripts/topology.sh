@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# topology.sh — PCIe topology, NVLink, NUMA mapping, CPU-GPU affinity
+# topology.sh -- PCIe topology, NVLink, NUMA mapping, CPU-GPU affinity
+# Phase: 2 (discovery)
+# Requires: jq, awk
+# Emits: topology.json
 SCRIPT_NAME="topology"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -39,18 +42,27 @@ nvswitch_count=$(int_or_default "${nvswitch_count:-0}" 0)
 # ── lstopo ──
 lstopo_text=""
 if has_cmd lstopo; then
-    lstopo_text=$(lstopo --of txt 2>/dev/null | head -200) || lstopo_text="N/A"
+    # Text capture: also filter Misc (MemoryModule) for a cleaner JSON payload
+    lstopo_text=$(lstopo --of txt --filter Misc:none 2>/dev/null | head -200) \
+        || lstopo_text=$(lstopo --of txt 2>/dev/null | head -200) \
+        || lstopo_text="N/A"
     # Generate a clean SVG focused on CPU/NUMA/Package hierarchy.
-    # --no-io:     hide PCI/disk/NIC clutter
-    # --no-caches: hide L1/L2/L3 boxes
-    # --no-smt:    hide individual PU (hardware thread) boxes
-    # --merge:     collapse levels with no hierarchical impact
-    # --no-attrs:  hide verbose size/frequency attributes (keeps labels)
+    # --no-io:            hide PCI/disk/NIC clutter
+    # --no-caches:        hide L1/L2/L3 boxes
+    # --no-smt:           hide individual PU (hardware thread) boxes
+    # --merge:            collapse levels with no hierarchical impact
+    # --no-attrs:         hide verbose size/frequency attributes (keeps labels)
+    # --no-legend:        remove bottom legend text
+    # --filter Misc:none: hide MemoryModule/Misc objects (DIMMs) that bloat the SVG
     # lstopo refuses to overwrite — remove stale file first
     rm -f "${HPC_RESULTS_DIR}/topology.svg"
     if lstopo --of svg --no-io --no-caches --no-smt --merge --no-attrs \
+             --no-legend --filter Misc:none \
              "${HPC_RESULTS_DIR}/topology.svg" 2>/dev/null; then
-        log_info "SVG topology saved (clean: no-io, no-caches, no-smt, merged)"
+        log_info "SVG topology saved (clean: no-io, no-caches, no-smt, no-misc, merged)"
+    elif lstopo --of svg --no-io --no-caches --no-smt --merge --no-attrs \
+                "${HPC_RESULTS_DIR}/topology.svg" 2>/dev/null; then
+        log_info "SVG topology saved (fallback: no-io, no-caches, no-smt, merged — Misc filter unsupported)"
     elif lstopo --of svg --no-io --merge "${HPC_RESULTS_DIR}/topology.svg" 2>/dev/null; then
         log_info "SVG topology saved (fallback: no-io, merged)"
     elif lstopo --of svg "${HPC_RESULTS_DIR}/topology.svg" 2>/dev/null; then

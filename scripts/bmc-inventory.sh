@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# bmc-inventory.sh — IPMI/BMC inventory (firmware, network, sensors); skips in VMs
+# bmc-inventory.sh -- IPMI/BMC inventory (firmware, network, sensors); skips in VMs
+# Phase: 2 (discovery)
+# Requires: jq, awk
+# Emits: bmc-inventory.json
 SCRIPT_NAME="bmc-inventory"
 source "$(dirname "$0")/../lib/common.sh"
 

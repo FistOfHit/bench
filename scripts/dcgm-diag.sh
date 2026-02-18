@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# dcgm-diag.sh — DCGM diagnostics level 3 (fallback to 2, then 1)
+# dcgm-diag.sh -- DCGM diagnostics level 3 (fallback to 2, then 1)
+# Phase: 3 (benchmark)
+# Requires: jq, timeout
+# Emits: dcgm-diag.json
 SCRIPT_NAME="dcgm-diag"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -50,7 +53,7 @@ if [ "$diag_level" -eq 0 ]; then
         skip_module "dcgm-diag" "all attempted DCGM levels failed in VM after diagnostics attempt"
     fi
     log_error "All DCGM diag levels failed"
-    echo "{\"error\":\"all levels failed\",\"output\":$(json_str "$diag_output")}" | emit_json "dcgm-diag" "error"
+    echo "{\"error\":\"all levels failed\",\"output\":$(sanitize_json_str "$diag_output")}" | emit_json "dcgm-diag" "error"
     exit 1
 fi
 

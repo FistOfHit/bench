@@ -123,10 +123,6 @@ sanitize_json_str() {
     printf '"%s"' "$input"
 }
 
-# Alias for sanitize_json_str — kept for backward compatibility.
-# Prefer sanitize_json_str() in new code.
-json_str() { sanitize_json_str "$@"; }
-
 # Trim leading/trailing whitespace.
 trim_ws() {
     local v="${1-}"
@@ -183,8 +179,12 @@ count_grep_re() {
 }
 
 # Compact JSON if valid, else emit fallback (default: {}).
+# NOTE: Do NOT use ${2:-{}} — bash mis-parses the nested braces, yielding
+#       the caller's $2 + a stray "}" (e.g. "[]}" instead of "[]").
 json_compact_or() {
-    local json="${1-}" fallback="${2:-{}}"
+    local json="${1-}"
+    local fallback="${2-}"
+    [ -z "$fallback" ] && fallback='{}'
     if [ -n "$json" ] && printf '%s' "$json" | jq -c . >/dev/null 2>&1; then
         printf '%s' "$json" | jq -c . 2>/dev/null || printf '%s' "$fallback"
         return 0
@@ -214,7 +214,8 @@ json_slurp_objects_or() {
 json_tmpfile() {
     local prefix="${1:?json_tmpfile: prefix required}"
     local json="${2-}"
-    local fallback="${3:-{}}"
+    local fallback="${3-}"
+    [ -z "$fallback" ] && fallback='{}'
     local tmp
     tmp=$(mktemp -p "${HPC_WORK_DIR}" "${prefix}.XXXXXX")
     if [ -n "$json" ]; then
@@ -431,7 +432,8 @@ skip_module() {
 skip_module_with_data() {
     local module="${1:?skip_module_with_data: module name required}"
     local reason="${2:-not applicable}"
-    local extra_json="${3:-{}}"
+    local extra_json="${3-}"
+    [ -z "$extra_json" ] && extra_json='{}'
     log_warn "Skipping $module: $reason"
     printf '%s' "$extra_json" \
         | jq --arg note "$reason" '. + {note: $note, skip_reason: $note}' \
@@ -497,6 +499,69 @@ detect_compute_capability() {
     cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
         | head -1 | tr -d '[:space:].')
     printf '%s' "${cc:-}"
+}
+
+# ── CUDA home detection (shared by gpu-inventory, nccl-tests, nvbandwidth) ──
+# Returns the best-guess CUDA_HOME path. Checks: $CUDA_HOME env, nvcc in PATH,
+# common install locations. Falls back to /usr/local/cuda.
+detect_cuda_home() {
+    if [ -d "${CUDA_HOME:-}" ]; then echo "$CUDA_HOME"; return; fi
+    local p
+    p=$(cmd_path nvcc)
+    if [ -n "$p" ]; then dirname "$(dirname "$p")"; return; fi
+    local d
+    for d in /usr/local/cuda /usr/local/cuda-*/; do
+        [ -d "$d/bin" ] && { echo "$d"; return; }
+    done
+    echo "/usr/local/cuda"
+}
+
+# ── Container runtime detection (shared by hpl-cpu, hpl-mxp) ──
+# Prints "docker" or "podman" if a usable runtime is found, else prints nothing.
+detect_container_runtime() {
+    if has_cmd docker && docker info &>/dev/null; then echo "docker"
+    elif has_cmd podman && podman info &>/dev/null; then echo "podman"
+    fi
+}
+
+# ── HPL.dat template generation (shared by hpl-cpu, hpl-mxp) ──
+# Generates a standard HPL.dat input file. Each caller computes its own N/NB/P/Q.
+# Usage: generate_hpl_dat <output_path> <N> <NB> <P> <Q>
+generate_hpl_dat() {
+    local output_path="$1" n="$2" nb="$3" p="$4" q="$5"
+    cat > "$output_path" <<HPLEOF
+HPLinpack benchmark input file
+Innovative Computing Laboratory, University of Tennessee
+HPL.out      output file name (if any)
+6            device out (6=stdout,7=stderr,file)
+1            # of problems sizes (N)
+$n           Ns
+1            # of NBs
+$nb          NBs
+0            PMAP process mapping (0=Row-,1=Column-major)
+1            # of process grids (P x Q)
+$p           Ps
+$q           Qs
+16.0         threshold
+1            # of panel fact
+2            PFACTs (0=left, 1=Crout, 2=Right)
+1            # of recursive stopping criterium
+4            NBMINs (>= 1)
+1            # of panels in recursion
+2            NDIVs
+1            # of recursive panel fact.
+1            RFACTs (0=left, 1=Crout, 2=Right)
+1            # of broadcast
+1            BCASTs (0=1rg,1=1rM,2=2rg,3=2rM,4=Lng,5=LnM)
+1            # of lookahead depth
+1            DEPTHs (>=0)
+2            SWAP (0=bin-exch,1=long,2=mix)
+64           swapping threshold
+0            L1 in (0=transposed,1=no-transposed) form
+0            U  in (0=transposed,1=no-transposed) form
+1            Equilibration (0=no,1=yes)
+8            memory alignment in double (> 0)
+HPLEOF
 }
 
 # ── Clone-or-copy source helper (shared by gpu-burn, nccl-tests) ──

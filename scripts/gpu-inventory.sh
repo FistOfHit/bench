@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# gpu-inventory.sh — NVIDIA GPU inventory (driver, CUDA, per-GPU details, NVLink, topology)
+# gpu-inventory.sh -- NVIDIA GPU inventory (driver, CUDA, per-GPU details, NVLink, topology)
+# Phase: 2 (discovery)
+# Requires: jq, python3
+# Emits: gpu-inventory.json
 SCRIPT_NAME="gpu-inventory"
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -41,24 +44,14 @@ case "$gpu_count_detected" in
     ''|*[!0-9]*) gpu_count_detected=0 ;;
 esac
 
-# nvcc version — check PATH then common locations
+# nvcc version — use shared CUDA home detection
 nvcc_ver="none"
-nvcc_path=""
-if has_cmd nvcc; then
+CUDA_HOME=$(detect_cuda_home)
+nvcc_path="${CUDA_HOME}/bin/nvcc"
+if [ ! -x "$nvcc_path" ]; then
     nvcc_path=$(cmd_path nvcc)
-elif [ -x "${CUDA_HOME:-/nonexistent}/bin/nvcc" ]; then
-    nvcc_path="${CUDA_HOME}/bin/nvcc"
-elif [ -x "/usr/local/cuda/bin/nvcc" ]; then
-    nvcc_path="/usr/local/cuda/bin/nvcc"
-else
-    for candidate in /usr/local/cuda-*/bin/nvcc; do
-        if [ -x "$candidate" ]; then
-            nvcc_path="$candidate"
-            break
-        fi
-    done
 fi
-if [ -n "$nvcc_path" ]; then
+if [ -n "$nvcc_path" ] && [ -x "$nvcc_path" ]; then
     nvcc_ver=$("$nvcc_path" --version 2>/dev/null | grep "release" | awk '{print $NF}' | tr -d ',' | tr -d '[:cntrl:]')
     log_info "Found nvcc at: $nvcc_path (version: $nvcc_ver)"
 fi
@@ -66,7 +59,14 @@ fi
 # ── Detect supported nvidia-smi fields ──
 # Some fields (e.g. bar1.total) are not supported on all driver/hardware combos
 # Test each optional field before including it in the query
-BASE_FIELDS="index,name,uuid,pci.bus_id,memory.total,memory.used,memory.free,power.limit,power.draw,temperature.gpu,clocks.current.graphics,clocks.current.memory,clocks.max.graphics,clocks.max.memory,compute_cap,persistence_mode,ecc.mode.current,mig.mode.current,pcie.link.gen.current,pcie.link.width.current"
+BASE_FIELDS="index,name,uuid,pci.bus_id"
+BASE_FIELDS+=",memory.total,memory.used,memory.free"
+BASE_FIELDS+=",power.limit,power.draw,temperature.gpu"
+BASE_FIELDS+=",clocks.current.graphics,clocks.current.memory"
+BASE_FIELDS+=",clocks.max.graphics,clocks.max.memory"
+BASE_FIELDS+=",compute_cap,persistence_mode"
+BASE_FIELDS+=",ecc.mode.current,mig.mode.current"
+BASE_FIELDS+=",pcie.link.gen.current,pcie.link.width.current"
 OPTIONAL_FIELDS=("bar1.total" "bar1.used" "fan.speed" "utilization.gpu" "utilization.memory" "clocks_throttle_reasons.active")
 
 QUERY_FIELDS="$BASE_FIELDS"

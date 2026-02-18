@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# bootstrap.sh — Entry point: detect hardware, install missing tools, set up environment
+# bootstrap.sh -- Entry point: detect hardware, install missing tools, set up environment
+# Phase: 0 (setup)
+# Requires: jq, awk, grep
+# Emits: bootstrap.json
 # Idempotent — safe to run multiple times
 SCRIPT_NAME="bootstrap"
 
@@ -223,6 +226,37 @@ if has_cmd nvidia-smi; then
 
         # Enable persistence mode
         nvidia-smi -pm 1 2>/dev/null || log_warn "Could not enable persistence mode"
+
+        # Ensure nvidia-uvm kernel module is loaded — required for CUDA API
+        # calls (gpu-burn, nccl-tests, nvbandwidth).  Without it, cuInit
+        # returns error 802 ("system not yet initialized").
+        if ! lsmod 2>/dev/null | grep -q nvidia_uvm; then
+            log_info "Loading nvidia-uvm kernel module..."
+            modprobe nvidia-uvm 2>/dev/null || log_warn "Could not load nvidia-uvm (non-fatal)"
+        fi
+
+        # ── Fabric Manager (multi-GPU A100/H100 SXM systems) ──
+        # Required for CUDA to initialize on NVSwitch-based multi-GPU systems.
+        # Without it, cuInit returns 802 ("system not yet initialized").
+        # Match the driver major version (e.g. driver 590.x → nvidia-fabricmanager-590).
+        if [ "$GPU_N" -gt 1 ] && ! systemctl is-active nvidia-fabricmanager &>/dev/null; then
+            _drv_major=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1)
+            _fm_pkg="nvidia-fabricmanager-${_drv_major}"
+            if [ -n "$_drv_major" ] && [ "$HAS_INTERNET" = true ] && [ "$PKG_MGR" = "apt" ]; then
+                if ! dpkg -l "$_fm_pkg" &>/dev/null; then
+                    log_info "Installing NVIDIA Fabric Manager ($_fm_pkg) for multi-GPU CUDA support..."
+                    ensure_cuda_repo
+                    if apt-get install -y "$_fm_pkg" 2>/dev/null; then
+                        log_ok "Fabric Manager installed ($_fm_pkg)"
+                    else
+                        log_warn "Fabric Manager install failed (non-fatal — single-GPU CUDA may still work)"
+                    fi
+                fi
+                systemctl enable --now nvidia-fabricmanager 2>/dev/null || log_warn "Could not start Fabric Manager"
+                # Brief pause for FM to initialize
+                sleep 2
+            fi
+        fi
     else
         log_warn "nvidia-smi found but not working — driver issue?"
     fi
@@ -358,6 +392,78 @@ if [ "$HAS_GPU" = true ] && [ "$HAS_INTERNET" = true ]; then
             $PKG_MGR install -y libnccl libnccl-devel 2>/dev/null || log_warn "NCCL install via $PKG_MGR failed (non-fatal)"
             ;;
     esac
+fi
+
+# ── Docker + NVIDIA container toolkit (auto-install when GPU present) ──
+# HPL-MxP and other container-based benchmarks need a GPU-capable container
+# runtime.  Install Docker + nvidia-container-toolkit automatically when:
+#   1. Working GPU detected  2. Internet available  3. apt-based distro
+#   4. No existing container runtime with NVIDIA support
+# The explicit --install-nvidia-container-toolkit flag still works and is
+# handled earlier; this block catches the common case where users just run
+# bootstrap without any flags.
+_has_gpu_container_runtime=false
+if has_cmd docker && docker info 2>/dev/null | grep -qi nvidia; then
+    _has_gpu_container_runtime=true
+fi
+
+if [ "$HAS_GPU" = true ] && [ "$HAS_INTERNET" = true ] && [ "$PKG_MGR" = "apt" ] \
+   && [ "$_has_gpu_container_runtime" = false ] && [ "$INSTALL_NVIDIA_CONTAINER_TOOLKIT" != true ]; then
+    log_info "GPU present but no GPU-capable container runtime — auto-installing Docker + NVIDIA container toolkit..."
+    _ct_install_ok=true
+
+    # Docker
+    if ! has_cmd docker; then
+        install -m 0755 -d /etc/apt/keyrings 2>/dev/null || true
+        if [ ! -f /etc/apt/keyrings/docker.gpg ]; then
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg 2>/dev/null \
+                | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null || _ct_install_ok=false
+            chmod a+r /etc/apt/keyrings/docker.gpg 2>/dev/null || true
+        fi
+        if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" \
+                > /etc/apt/sources.list.d/docker.list 2>/dev/null || _ct_install_ok=false
+        fi
+        apt-get update 2>/dev/null || _ct_install_ok=false
+        if ! apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin 2>/dev/null; then
+            log_warn "Docker CE install failed, falling back to docker.io"
+            apt-get install -y docker.io 2>/dev/null || _ct_install_ok=false
+        fi
+    fi
+
+    # NVIDIA container toolkit
+    if [ ! -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]; then
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey 2>/dev/null \
+            | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null || _ct_install_ok=false
+    fi
+    if [ ! -f /etc/apt/sources.list.d/nvidia-container-toolkit.list ]; then
+        curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list 2>/dev/null \
+            | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+            > /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null || _ct_install_ok=false
+    fi
+    apt-get update 2>/dev/null || _ct_install_ok=false
+    apt-get install -y nvidia-container-toolkit nvidia-container-toolkit-base 2>/dev/null || _ct_install_ok=false
+
+    # Configure Docker runtime and restart
+    if has_cmd nvidia-ctk; then
+        nvidia-ctk runtime configure --runtime=docker >/dev/null 2>&1 || _ct_install_ok=false
+    else
+        _ct_install_ok=false
+    fi
+    if has_cmd systemctl; then
+        systemctl enable --now docker >/dev/null 2>&1 || true
+        systemctl restart docker >/dev/null 2>&1 || _ct_install_ok=false
+    else
+        service docker restart >/dev/null 2>&1 || true
+    fi
+
+    if [ "$_ct_install_ok" = true ] && has_cmd docker && docker info 2>/dev/null | grep -qi nvidia; then
+        log_ok "Docker + NVIDIA container runtime auto-installed and configured"
+    elif has_cmd docker; then
+        log_warn "Docker installed but NVIDIA runtime not yet detected (non-fatal)"
+    else
+        log_warn "Docker + NVIDIA container toolkit auto-install incomplete (non-fatal)"
+    fi
 fi
 
 # ── InfiniBand tools ──

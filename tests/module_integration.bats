@@ -3,22 +3,17 @@
 # Validates syntax, manifest consistency, early-exit guards, and report generation.
 # Run: bats tests/module_integration.bats
 
-# Portable fail helper (not built-in in all bats versions).
-_fail() { echo "$1" >&2; return 1; }
+load helpers
 
 # ── Test setup ──
 setup() {
-    export HPC_BENCH_ROOT="${BATS_TEST_DIRNAME}/.."
-    export HPC_RESULTS_DIR="$(mktemp -d)"
-    export HPC_LOG_DIR="${HPC_RESULTS_DIR}/logs"
-    export HPC_WORK_DIR="$(mktemp -d)"
-    mkdir -p "$HPC_LOG_DIR"
+    setup_test_env "test-integration"
     SCRIPTS_DIR="${HPC_BENCH_ROOT}/scripts"
     MANIFEST="${HPC_BENCH_ROOT}/specs/modules.json"
 }
 
 teardown() {
-    rm -rf "$HPC_RESULTS_DIR" "$HPC_WORK_DIR"
+    teardown_test_env
 }
 
 # ═══════════════════════════════════════════
