@@ -82,10 +82,19 @@ for field in "${OPTIONAL_FIELDS[@]}"; do
     fi
 done
 
-log_info "Querying fields: $QUERY_FIELDS"
+# Extended fields (ECC / retired pages) — unsupported on some drivers or consumer GPUs; try once, fallback to safe-only
+EXTENDED_FIELDS="ecc.errors.corrected.volatile.total,ecc.errors.uncorrected.volatile.total,ecc.errors.corrected.aggregate.total,ecc.errors.uncorrected.aggregate.total,retired_pages.single_bit_ecc.count,retired_pages.double_bit_ecc.count"
+HAS_EXTENDED=0
+QUERY_WITH_EXT="${QUERY_FIELDS},${EXTENDED_FIELDS}"
+RAW_GPU_DATA=$(nvidia-smi --query-gpu="$QUERY_WITH_EXT" --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]') || true
+if [ -n "$RAW_GPU_DATA" ] && echo "$RAW_GPU_DATA" | head -1 | grep -q . && echo "$RAW_GPU_DATA" | head -1 | grep -qE '^[0-9]'; then
+    HAS_EXTENDED=1
+    log_info "Querying fields: $QUERY_FIELDS + extended (ECC/retired pages)"
+else
+    log_warn "Extended fields (ECC/retired pages) not supported — using safe fields only"
+    RAW_GPU_DATA=$(nvidia-smi --query-gpu="$QUERY_FIELDS" --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]') || true
+fi
 
-# ── Per-GPU details (allow nvidia-smi to fail in VMs / restricted environments) ──
-RAW_GPU_DATA=$(nvidia-smi --query-gpu="$QUERY_FIELDS" --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]') || true
 if [ -z "$RAW_GPU_DATA" ] || ! echo "$RAW_GPU_DATA" | head -1 | grep -q .; then
     log_warn "Full GPU query returned no data — trying base fields only"
     RAW_GPU_DATA=$(nvidia-smi --query-gpu="$BASE_FIELDS" --format=csv,noheader,nounits 2>/dev/null | tr -d '[:cntrl:]') || true
@@ -95,6 +104,8 @@ if [ -z "$RAW_GPU_DATA" ]; then
     echo '{"gpus":[],"error":"nvidia-smi query failed"}' | emit_json "gpu-inventory" "error"
     exit 1
 fi
+
+[ "$HAS_EXTENDED" -eq 0 ] && log_info "Querying fields: $QUERY_FIELDS"
 
 # Build optional fields JSON string for python3
 OPT_JSON="["
@@ -106,9 +117,29 @@ for f in "${ACTIVE_OPTIONAL[@]}"; do
 done
 OPT_JSON+="]"
 
-# Build GPU JSON using python3 for robustness (awk gets unwieldy with variable field counts)
+# Extended field names (when HAS_EXTENDED=1)
+EXTENDED_NAMES='["ecc_errors_corrected_volatile_total","ecc_errors_uncorrected_volatile_total","ecc_errors_corrected_aggregate_total","ecc_errors_uncorrected_aggregate_total","retired_pages_single_bit_ecc_count","retired_pages_double_bit_ecc_count"]'
+
+# Build GPU JSON using python3 for robustness (variable field counts; memory_type from name for driver compatibility)
 gpu_json=$(echo "$RAW_GPU_DATA" | python3 -c "
 import sys, json
+
+def guess_memory_type(name):
+    '''Derive memory type from GPU model name when driver field is missing or wrong (e.g. driver 590+).'''
+    if not name:
+        return 'Unknown'
+    n = name.upper()
+    if 'A100' in n or 'A30' in n: return 'HBM2e'
+    if 'H100' in n: return 'HBM3'
+    if 'H200' in n or 'B100' in n or 'B200' in n or 'B300' in n: return 'HBM3e'
+    if 'A6000' in n or 'A5000' in n or 'A4000' in n or 'A2000' in n or 'A10' in n or 'A16' in n or 'A40' in n: return 'GDDR6'
+    if 'L4' in n or 'L40' in n: return 'GDDR6'
+    if 'RTX 50' in n or '50' in n and 'RTX' in n: return 'GDDR7'
+    if 'RTX 40' in n or 'ADA' in n: return 'GDDR6X'
+    if 'RTX 30' in n or 'RTX 20' in n or 'RTX 60' in n: return 'GDDR6'
+    if 'V100' in n or 'P100' in n: return 'HBM2'
+    if 'T4' in n or 'GTX' in n: return 'GDDR6'
+    return 'Unknown'
 
 # Base field names (always present)
 base_fields = ['index','name','uuid','pci_bus_id','memory_total_mb','memory_used_mb','memory_free_mb',
@@ -116,18 +147,21 @@ base_fields = ['index','name','uuid','pci_bus_id','memory_total_mb','memory_used
                'clock_max_graphics_mhz','clock_max_memory_mhz','compute_capability','persistence_mode',
                'ecc_mode','mig_mode','pcie_gen','pcie_width']
 
-# Optional fields that were detected
 try:
     optional_fields = json.loads('$OPT_JSON')
 except:
     optional_fields = []
 
-all_fields = base_fields + optional_fields
+extended_fields = json.loads('$EXTENDED_NAMES') if $HAS_EXTENDED else []
+all_fields = base_fields + optional_fields + extended_fields
 
 numeric_fields = {'index','memory_total_mb','memory_used_mb','memory_free_mb','power_limit_w','power_draw_w',
                   'temperature_c','clock_graphics_mhz','clock_memory_mhz','clock_max_graphics_mhz',
                   'clock_max_memory_mhz','pcie_gen','pcie_width','bar1_total','bar1_used',
-                  'utilization_gpu','utilization_memory'}
+                  'utilization_gpu','utilization_memory',
+                  'ecc_errors_corrected_volatile_total','ecc_errors_uncorrected_volatile_total',
+                  'ecc_errors_corrected_aggregate_total','ecc_errors_uncorrected_aggregate_total',
+                  'retired_pages_single_bit_ecc_count','retired_pages_double_bit_ecc_count'}
 
 gpus = []
 for line in sys.stdin:
@@ -150,6 +184,8 @@ for line in sys.stdin:
                 gpu[field] = val
         else:
             gpu[field] = None
+    # Memory type from model name (driver memory.type can be wrong or missing on some driver versions)
+    gpu['memory_type'] = guess_memory_type(gpu.get('name') or '')
     gpus.append(gpu)
 
 print(json.dumps(gpus))

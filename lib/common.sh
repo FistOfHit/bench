@@ -43,6 +43,34 @@ export HPC_WORK_DIR="${HPC_WORK_DIR:-/tmp/hpc-bench-work}"
 
 mkdir -p "$HPC_RESULTS_DIR" "$HPC_LOG_DIR" "$HPC_WORK_DIR"
 
+# Suite version (for module JSON traceability); run-all/report set it, else read VERSION
+if [ -z "${HPC_BENCH_VERSION:-}" ] && [ -f "${HPC_BENCH_ROOT}/VERSION" ]; then
+    export HPC_BENCH_VERSION=$(tr -d '[:space:]' < "${HPC_BENCH_ROOT}/VERSION" 2>/dev/null || echo "unknown")
+fi
+
+# ── ASCII-safe status display (for HPC_ASCII_OUTPUT=1) ──
+# Returns Unicode symbol or ASCII label for PASS/WARN/FAIL/SKIP. Use in report and run-all checklist.
+status_display_string() {
+    local score="${1:-}"
+    if [ "${HPC_ASCII_OUTPUT:-0}" = "1" ]; then
+        case "$score" in
+            PASS) echo "[OK]" ;;
+            WARN) echo "[WARN]" ;;
+            FAIL) echo "[FAIL]" ;;
+            SKIP) echo "[SKIP]" ;;
+            *) echo "[?]" ;;
+        esac
+    else
+        case "$score" in
+            PASS) echo "✅" ;;
+            WARN) echo "⚠️" ;;
+            FAIL) echo "❌" ;;
+            SKIP) echo "⏭️" ;;
+            *) echo "❓" ;;
+        esac
+    fi
+}
+
 # ── Logging ──
 _log() {
     local level="$1"; shift
@@ -76,13 +104,16 @@ emit_json() {
     touch "$_HPC_JSON_MARKER" 2>/dev/null || true
     local module="$1" status="$2" file="${HPC_RESULTS_DIR}/${1}.json"
     shift 2
+    local ts suite_ver
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    suite_ver="${HPC_BENCH_VERSION:-unknown}"
     # Read JSON object from stdin or remaining args
     if [ $# -gt 0 ]; then
-        echo "$@" | jq --arg m "$module" --arg s "$status" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '. + {module: $m, status: $s, timestamp: $t}' > "$file"
+        echo "$@" | jq --arg m "$module" --arg s "$status" --arg t "$ts" --arg v "$suite_ver" \
+            '. + {module: $m, status: $s, timestamp: $t, suite_version: $v}' > "$file"
     else
-        jq --arg m "$module" --arg s "$status" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '. + {module: $m, status: $s, timestamp: $t}' > "$file"
+        jq --arg m "$module" --arg s "$status" --arg t "$ts" --arg v "$suite_ver" \
+            '. + {module: $m, status: $s, timestamp: $t, suite_version: $v}' > "$file"
     fi
     log_info "Results written to $file"
 }

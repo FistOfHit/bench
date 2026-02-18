@@ -157,3 +157,21 @@ run_report_scoring() {
     if [ "$WARN_COUNT" -gt 0 ]; then OVERALL="WARN"; fi
     if [ "$FAIL_COUNT" -gt 0 ]; then OVERALL="FAIL"; fi
 }
+
+# Build verdict.issues array for report.json (machine-readable for CI/tooling).
+# Call after run_report_scoring. Outputs compact JSON array to stdout.
+build_verdict_issues_json() {
+    local mod note sev
+    local out="[]"
+    for mod in "${ALL_MODULES[@]}"; do
+        case "${SCORES[$mod]}" in
+            PASS) continue ;;
+            FAIL) sev="critical" ;;
+            WARN) sev="warning" ;;
+            SKIP|UNKNOWN|*) sev="info" ;;
+        esac
+        note="${SCORE_NOTES[$mod]:-}"
+        out=$(echo "$out" | jq --arg m "$mod" --arg i "$note" --arg s "$sev" '. + [{module:$m, issue:$i, severity:$s}]')
+    done
+    echo "$out"
+}

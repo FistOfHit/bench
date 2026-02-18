@@ -18,7 +18,7 @@ Results are written as JSON per module and can be consumed by the bundled report
 
 - **OS:** Linux (tested on Ubuntu and RHEL/CentOS)
 - **Privilege:** Root (or sudo) for bootstrap and full suite. Non-root runs are supported: results go to `$HOME/.local/var/hpc-bench/results` and root-only modules (bootstrap, bmc-inventory) are skipped.
-- **Tools:** `jq` (1.6+), `bash` (4+), `python3` (required by several helpers in `lib/common.sh`). Bootstrap installs jq when missing. Optional: NVIDIA driver/CUDA, DCGM, NCCL, InfiniBand stack, Docker (for HPL-MxP).
+- **Tools:** `jq` (1.6+), `bash` (4+), `python3` (required by several helpers in `lib/common.sh`). Bootstrap installs jq when missing. Optional: NVIDIA driver/CUDA, DCGM, NCCL, InfiniBand stack, Docker (for HPL-MxP). **DCGM is optional:** if it is not available or all diagnostic levels fail (e.g. in some VMs), the `dcgm-diag` module is skipped with a clear note rather than failing the suite.
 
 Bootstrap installs jq and other core packages when run as root with network access; use `--check-only` to see what’s missing without installing. When GPUs are detected, Boost (libboost-dev / boost-devel) is also installed to improve nvbandwidth build-from-source; nvbandwidth can still skip on some distros and is non-fatal. **Installing NVIDIA stack:** On a fresh Ubuntu system with an NVIDIA GPU, run `sudo bash scripts/bootstrap.sh --install-nvidia`. Internet is required. After the driver is installed, reboot and run bootstrap again (with or without `--install-nvidia`) to complete CUDA toolkit, DCGM, and NCCL setup. To enable GPU-capable containers for `hpl-mxp`, run `sudo bash scripts/bootstrap.sh --install-nvidia-container-toolkit`. You can also combine both flags in one workflow, then reboot when prompted, and run the same combined command once more.
 
@@ -104,6 +104,8 @@ Results go to `/var/log/hpc-bench/results/` by default when run as root (overrid
 | **Per-module JSON** — machine-readable results | One file per module: `bootstrap.json`, `gpu-burn.json`, `dcgm-diag.json`, `run-all.json`, etc., in the same folder. |
 | **Logs** — if you need to debug or inspect stdout | **`logs/`** subfolder: e.g. `logs/gpu-burn-stdout.log`, `logs/dcgm-diag.log`, `logs/fio-seq-read.log`. |
 | **Portable bundle** — to copy off the server | A timestamped tarball in the results folder: `hpc-bench-<hostname>-<timestamp>.tar.gz` (contains all JSON, report, and logs). Transfer with `scp` or `rsync`, e.g. `scp user@host:$HPC_RESULTS_DIR/hpc-bench-*.tar.gz .` or `rsync -av user@host:$HPC_RESULTS_DIR/ ./results/`. |
+| **Sample report (sanitized)** — see format before running | [examples/report.md](examples/report.md) in the repo. |
+| **Optional HTML report** — single-file, print-friendly | Generate with `python3 reporting/generate_html_report.py -i $HPC_RESULTS_DIR -o $HPC_RESULTS_DIR/report.html` (after running the suite). See below. |
 
 **Example (default path):**
 
@@ -124,11 +126,21 @@ Results go to `/var/log/hpc-bench/results/` by default when run as root (overrid
 └── hpc-bench-<hostname>-<timestamp>.tar.gz
 ```
 
-To use a different output directory and regenerate the report from existing results:
+To use a different output directory and regenerate the report from existing results (e.g. after copying results from another host or an air-gapped run):
 
 ```bash
 HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 ```
+
+This **offline or air-gapped report regeneration** uses only the JSON files in the results directory; no network or re-run of benchmarks is required.
+
+**Optional HTML report:** To generate a single-file HTML report (handy for sharing or printing), run the Python generator after the suite (or after regenerating `report.md`):
+
+```bash
+python3 reporting/generate_html_report.py -i "$HPC_RESULTS_DIR" -o "$HPC_RESULTS_DIR/report.html"
+```
+
+If `HPC_RESULTS_DIR` is set, you can omit `-i`. The HTML report includes device result, scorecard, hardware summary, and issues; it does not replace the default Markdown report.
 
 ## Running individual modules
 
@@ -164,6 +176,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 | `HPC_AUTO_INSTALL_CONTAINER_RUNTIME` | `0` | Set to `1` to let `run-all.sh` auto-run `bootstrap.sh --install-nvidia-container-toolkit` during early runtime sanity if GPU is present but NVIDIA container runtime is missing (requires root + internet). |
 | `HPC_FAIL_FAST_RUNTIME` | `0` | Set to `1` to make early runtime sanity fail immediately when GPU driver is present but NVIDIA container runtime is missing. |
 | `HPC_HPL_MXP_VM_STRICT` | `0` | Set to `1` to disable VM auto-skip conversion in `hpl-mxp.sh`; VM-specific container failures (e.g., SIGPIPE/no usable output) are treated as hard errors. |
+| `HPC_ASCII_OUTPUT` | `0` | Set to `1` to use ASCII-only status symbols in the report and run-all checklist (e.g. `[OK]`, `[FAIL]`, `[SKIP]`) instead of Unicode; use when terminals or CI mangle UTF-8. |
 
 ## Repository layout
 

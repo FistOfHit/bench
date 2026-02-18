@@ -161,6 +161,25 @@ manifest_phase_scripts() {
     ' "$MODULES_MANIFEST" 2>/dev/null
 }
 
+# One-line summary for a phase (passed/failed/skipped counts). Call after the phase completes.
+phase_summary_line() {
+    local phase="$1" label="$2"
+    local -a names=()
+    mapfile -t names < <(jq -r --argjson p "$phase" '.modules | map(select(.phase == $p)) | .[].name' "$MODULES_MANIFEST" 2>/dev/null)
+    local p=0 f=0 s=0 n st
+    for n in "${names[@]}"; do
+        [ -z "$n" ] && continue
+        st="${MODULE_STATUS[$n]:-}"
+        if [[ "$st" == OK* ]]; then ((p++)) || true
+        elif [[ "$st" == SKIPPED* ]]; then ((s++)) || true
+        else ((f++)) || true
+        fi
+    done
+    local total=$((p + f + s))
+    [ "$total" -eq 0 ] && return
+    log_info "  Phase $phase $label: $p passed, $f failed, $s skipped"
+}
+
 manifest_required_cmds() {
     local name="$1"
     jq -r --arg n "$name" '
@@ -329,6 +348,7 @@ else
     # Emit minimal bootstrap.json so report has hostname/results_dir (optional)
     jq -n --arg h "$(hostname)" --arg r "${HPC_RESULTS_DIR}" '{hostname: $h, results_dir: $r, status: "skipped", note: "requires root"}' | emit_json "bootstrap" "skipped" 2>/dev/null || true
 fi
+phase_summary_line 0 "Bootstrap"
 
 # ═══════════════════════════════════════════
 # PHASE 1: Runtime Sanity (manifest phase=1, early fail-fast/auto-install checks)
@@ -344,6 +364,7 @@ if [ "${HPC_FAIL_FAST_RUNTIME:-0}" = "1" ] && \
     log_error "Resolve runtime prerequisites or rerun without --fail-fast-runtime."
     exit 1
 fi
+phase_summary_line 1 "Runtime Sanity"
 
 # ═══════════════════════════════════════════
 # PHASE 2: Discovery & Inventory (manifest phase=2, parallel)
@@ -402,6 +423,7 @@ for i in "${!_phase2_pids[@]}"; do
     fi
     record_module_result "$name" "$rc" "$mod_duration"
 done
+phase_summary_line 2 "Discovery"
 
 # ═══════════════════════════════════════════
 # PHASE 3: Benchmarks (manifest phase=3, skipped in smoke mode)
@@ -414,6 +436,7 @@ if [ "${HPC_SMOKE:-0}" != "1" ]; then
     for script in "${PHASE3_SCRIPTS[@]}"; do
         run_module "${SCRIPT_DIR}/${script}"
     done
+    phase_summary_line 3 "Benchmarks"
 fi
 
 # ═══════════════════════════════════════════
@@ -427,6 +450,7 @@ if [ "${HPC_SMOKE:-0}" != "1" ]; then
     for script in "${PHASE4_SCRIPTS[@]}"; do
         run_module "${SCRIPT_DIR}/${script}"
     done
+    phase_summary_line 4 "Diagnostics"
 fi
 
 # ═══════════════════════════════════════════
@@ -439,6 +463,7 @@ mapfile -t PHASE5_SCRIPTS < <(manifest_phase_scripts 5 "$HPC_IS_ROOT")
 for script in "${PHASE5_SCRIPTS[@]}"; do
     run_module "${SCRIPT_DIR}/${script}"
 done
+phase_summary_line 5 "Report"
 
 # ═══════════════════════════════════════════
 # Summary — Progressive output: device result → checklist → details
@@ -467,11 +492,11 @@ echo "  ────────────────────────
 for name in $(printf '%s\n' "${!MODULE_STATUS[@]}" | sort); do
     status="${MODULE_STATUS[$name]}"
     if [[ "$status" == OK* ]]; then
-        symbol="✓"
+        symbol=$(status_display_string PASS)
     elif [[ "$status" == SKIPPED* ]]; then
-        symbol="○"
+        symbol=$(status_display_string SKIP)
     else
-        symbol="✗"
+        symbol=$(status_display_string FAIL)
     fi
     printf "    %s  %-28s  %s\n" "$symbol" "$name" "$status"
 done

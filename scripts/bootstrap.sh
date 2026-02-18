@@ -89,14 +89,14 @@ fi
 CORE_TOOLS=(jq bc curl dmidecode lshw pciutils util-linux numactl hwloc smartmontools ethtool sysstat)
 case "$PKG_MGR" in
     apt)
-        CORE_TOOLS+=(gnupg ipmitool fio net-tools build-essential linux-tools-common)
+        CORE_TOOLS+=(gnupg ipmitool fio net-tools build-essential cmake linux-tools-common)
         KVER=$(uname -r)
         if [ "$CHECK_ONLY" = false ] && apt-cache show "linux-tools-${KVER}" &>/dev/null; then
             CORE_TOOLS+=("linux-tools-${KVER}")
         fi
         ;;
     dnf|yum)
-        CORE_TOOLS+=(gnupg2 ipmitool fio net-tools gcc gcc-c++ make kernel-tools perf)
+        CORE_TOOLS+=(gnupg2 ipmitool fio net-tools gcc gcc-c++ make cmake kernel-tools perf)
         ;;
 esac
 
@@ -339,10 +339,14 @@ if [ "$HAS_GPU" = true ] && ! has_cmd dcgmi && [ "$HAS_INTERNET" = true ]; then
     case "$PKG_MGR" in
         apt)
             ensure_cuda_repo
-            apt-get install -y datacenter-gpu-manager 2>/dev/null || log_warn "DCGM install failed (non-fatal)"
+            if ! apt-get install -y datacenter-gpu-manager 2>>"${HPC_LOG_DIR}/bootstrap-dcgm.log"; then
+                log_warn "DCGM install failed (non-fatal). Check ${HPC_LOG_DIR}/bootstrap-dcgm.log"
+            fi
             ;;
         dnf|yum)
-            $PKG_MGR install -y datacenter-gpu-manager 2>/dev/null || log_warn "DCGM install failed (non-fatal)"
+            if ! $PKG_MGR install -y datacenter-gpu-manager 2>>"${HPC_LOG_DIR}/bootstrap-dcgm.log"; then
+                log_warn "DCGM install failed (non-fatal). Check ${HPC_LOG_DIR}/bootstrap-dcgm.log"
+            fi
             ;;
     esac
     if has_cmd nv-hostengine; then

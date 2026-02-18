@@ -18,6 +18,9 @@ RUN_DATE=$(jf "${HPC_RESULTS_DIR}/run-all.json" '.start_time' "$(date -u +%Y-%m-
 DURATION=$(jf "${HPC_RESULTS_DIR}/run-all.json" '.duration' 'standalone run')
 
 run_report_scoring
+# Phase 5 summary counts modules from the manifest (including "report"); score report as PASS so it is not shown as skipped.
+SCORES[report]=PASS
+SCORE_NOTES[report]=""
 
 GPU_MODEL="none"
 GPU_COUNT=0
@@ -95,18 +98,41 @@ emit_scorecard() {
                 cat="Diagnostic" ;;
             *) cat="Other" ;;
         esac
-        case "$local_score" in
-            PASS) icon="✅" ;;
-            WARN) icon="⚠️" ;;
-            FAIL) icon="❌" ;;
-            SKIP) icon="⏭️" ;;
-            *) icon="❓" ;;
-        esac
+        icon=$(status_display_string "$local_score")
         echo "| ${mod} | ${cat} | ${icon} ${local_score} | ${local_note} |"
     done
 
     echo ""
     echo "**Summary:** ${PASS_COUNT} passed, ${WARN_COUNT} warnings, ${FAIL_COUNT} failed, ${SKIP_COUNT} skipped"
+    echo ""
+    echo "### Phase Summary"
+    echo ""
+    local p label mod pass warn fail skip total
+    local manifest="${HPC_BENCH_ROOT}/specs/modules.json"
+    for p in 0 1 2 3 4 5; do
+        case "$p" in
+            0) label="Bootstrap" ;;
+            1) label="Runtime Sanity" ;;
+            2) label="Discovery" ;;
+            3) label="Benchmarks" ;;
+            4) label="Diagnostics" ;;
+            5) label="Report" ;;
+            *) label="Phase $p" ;;
+        esac
+        pass=0 warn=0 fail=0 skip=0
+        while IFS= read -r mod; do
+            [ -z "$mod" ] && continue
+            case "${SCORES[$mod]:-}" in
+                PASS) pass=$((pass + 1)) ;;
+                WARN) warn=$((warn + 1)) ;;
+                FAIL) fail=$((fail + 1)) ;;
+                SKIP|*) skip=$((skip + 1)) ;;
+            esac
+        done < <(jq -r --argjson ph "$p" '.modules[] | select(.phase == $ph) | .name' "$manifest" 2>/dev/null)
+        total=$((pass + warn + fail + skip))
+        [ "$total" -eq 0 ] && continue
+        echo "- **Phase $p $label:** $pass passed, $warn warnings, $fail failed, $skip skipped"
+    done
     echo ""
     echo "---"
     echo ""
@@ -404,8 +430,7 @@ emit_issues() {
     for mod in "${ALL_MODULES[@]}"; do
         if [ "${SCORES[$mod]}" = "FAIL" ] || [ "${SCORES[$mod]}" = "WARN" ]; then
             issues_found=true
-            icon="⚠️"
-            [ "${SCORES[$mod]}" = "FAIL" ] && icon="❌"
+            icon=$(status_display_string "${SCORES[$mod]}")
             echo "- ${icon} **${mod}:** ${SCORE_NOTES[$mod]}"
         fi
     done
@@ -416,7 +441,7 @@ emit_issues() {
         memlock=$(jf "${HPC_RESULTS_DIR}/ib-tests.json" '.memlock_check' 'ok')
         if [ "$memlock" = "warn" ]; then
             memlock_val=$(jf "${HPC_RESULTS_DIR}/ib-tests.json" '.memlock_ulimit_kb' 'N/A')
-            echo "- ⚠️ **memlock ulimit:** Currently ${memlock_val} KB — should be 'unlimited' for RDMA. Set in /etc/security/limits.conf"
+            echo "- $(status_display_string WARN) **memlock ulimit:** Currently ${memlock_val} KB — should be 'unlimited' for RDMA. Set in /etc/security/limits.conf"
             issues_found=true
         fi
     fi
@@ -425,13 +450,13 @@ emit_issues() {
     if has_result "security-scan"; then
         if jq -e '.warnings[]? | select(. | test("PasswordAuth|Password"; "i"))' \
                 "${HPC_RESULTS_DIR}/security-scan.json" &>/dev/null; then
-            echo "- ⚠️ **SSH PasswordAuthentication:** Set \`PasswordAuthentication no\` in sshd_config and restart sshd (e.g. \`systemctl restart sshd\`)."
+            echo "- $(status_display_string WARN) **SSH PasswordAuthentication:** Set \`PasswordAuthentication no\` in sshd_config and restart sshd (e.g. \`systemctl restart sshd\`)."
             issues_found=true
         fi
     fi
 
     if [ "$issues_found" = false ]; then
-        echo "No issues found. ✅"
+        echo "No issues found. $(status_display_string PASS)"
     fi
 
     echo ""
@@ -509,6 +534,7 @@ emit_footer() {
 } > "$REPORT_FILE"
 
 log_ok "Report written to $REPORT_FILE"
+VERDICT_ISSUES=$(build_verdict_issues_json)
 jq -n \
     --arg report_file "$REPORT_FILE" \
     --arg overall "$OVERALL" \
@@ -516,5 +542,14 @@ jq -n \
     --argjson warn "$WARN_COUNT" \
     --argjson fail "$FAIL_COUNT" \
     --argjson skip "$SKIP_COUNT" \
-    '{report_file: $report_file, overall: $overall, pass: $pass, warn: $warn, fail: $fail, skip: $skip}' \
+    --argjson verdict_issues "$VERDICT_ISSUES" \
+    '{
+        report_file: $report_file,
+        overall: $overall,
+        pass: $pass,
+        warn: $warn,
+        fail: $fail,
+        skip: $skip,
+        verdict: { overall: $overall, issues: $verdict_issues }
+    }' \
     | emit_json "report" "ok"

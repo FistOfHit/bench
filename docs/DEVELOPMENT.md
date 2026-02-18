@@ -74,6 +74,10 @@ make static-checks
 5. If the module needs custom report sections, add them to `scripts/report.sh`.
 6. Ensure it emits JSON consistently (prefer `emit_json_safe` when generating JSON from other tools).
 
+## Output conventions
+
+- When `HPC_ASCII_OUTPUT=1`, report and run-all checklist use ASCII labels (`[OK]`, `[WARN]`, `[FAIL]`, `[SKIP]`) instead of Unicode symbols; use `status_display_string PASS|WARN|FAIL|SKIP` from `lib/common.sh` for any new user-facing status output.
+
 ## Variable naming
 
 - `UPPER_SNAKE_CASE` for exported/global variables and constants
@@ -88,4 +92,4 @@ The report generator expects:
 - A generated report at `$HPC_RESULTS_DIR/report.md`
 - Optional module logs under `$HPC_LOG_DIR/` (defaults to `$HPC_RESULTS_DIR/logs`)
 
-Avoid renaming JSON fields without updating the report and any external consumers.
+Avoid renaming JSON fields without updating the report and any external consumers. Each module JSON includes `suite_version` (from the VERSION file) for traceability; see `emit_json` in `lib/common.sh`.

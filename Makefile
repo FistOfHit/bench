@@ -1,4 +1,4 @@
-.PHONY: help lint shellcheck test static-checks check smoke quick ci-smoke ci-quick version
+.PHONY: help lint shellcheck test static-checks check smoke quick ci-smoke ci-quick report-html version
 
 # ── Meta ──
 
@@ -17,6 +17,7 @@ help:
 	@echo "  make quick          Run suite in quick mode (short benchmarks)"
 	@echo "  make ci-smoke       Run smoke with --ci (compact output for CI)"
 	@echo "  make ci-quick       Run quick with --ci (compact output for CI)"
+	@echo "  make report-html    Generate optional HTML report from HPC_RESULTS_DIR (default /var/log/hpc-bench/results)"
 	@echo ""
 	@echo "Info:"
 	@echo "  make version        Show suite version"
@@ -59,6 +60,11 @@ ci-smoke:
 
 ci-quick:
 	bash scripts/run-all.sh --quick --ci
+
+report-html:
+	@results="$${HPC_RESULTS_DIR:-/var/log/hpc-bench/results}"; \
+	if [ ! -d "$$results" ]; then echo "Results dir not found: $$results. Run the suite first or set HPC_RESULTS_DIR."; exit 1; fi; \
+	python3 reporting/generate_html_report.py -i "$$results" -o "$$results/report.html"
 
 # ── Info ──
 
