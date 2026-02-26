@@ -9,15 +9,26 @@ This is a pure-Bash HPC benchmarking CLI suite (no web services, databases, or b
 | Task | Command |
 |------|---------|
 | Lint (pre-commit: shfmt + shellcheck) | `make lint` |
-| Unit tests (BATS, 114 tests) | `make test` |
+| Unit tests (BATS, 126 tests) | `make test` |
 | All quality gates | `make check` |
 | CI static checks | `make static-checks` |
 | Smoke run (bootstrap + inventory + report, ~5s) | `sudo bash scripts/run-all.sh --smoke --ci` |
 | Quick run (short benchmarks) | `sudo bash scripts/run-all.sh --quick --ci` |
 
 | Check dependency updates | `make check-updates` |
+| Preview dependency updates | `bash scripts/check-updates.sh --apply --dry-run` |
 
 See `Makefile` for all targets and `README.md` / `SKILL.md` for full documentation.
+
+### Dependency update system
+
+`scripts/check-updates.sh` tracks 14 external dependencies (container images, NVIDIA packages, upstream repos, pre-commit hooks) via `specs/dependencies.json`. It queries nvcr.io, Docker Hub, GitHub, and NVIDIA apt repos. Key modes:
+- `--json` for CI consumption
+- `--apply` to update version pins in source files
+- `--apply --dry-run` to preview without modifying
+- `--category <cat>` to filter (container_image, nvidia_package, pre_commit_hook, upstream_source)
+
+The weekly GitHub Actions workflow (`.github/workflows/dependency-update.yml`) runs this automatically, validates with lint/tests/smoke, and opens a PR. CUDA↔driver compatibility constraints are checked before applying.
 
 ### Gotchas
 
