@@ -127,7 +127,18 @@
       "update_targets": [
         "scripts/bootstrap.sh"
       ],
-      "notes": "Fallback CUDA runtime version in bootstrap.sh (_cuda_runtime:-M.N)."
+      "notes": "Fallback CUDA runtime version in bootstrap.sh (_cuda_runtime:-M.N).",
+      "constraints": [
+        {
+          "requires": "nvidia-driver",
+          "minimum_version": {
+            "13": "580",
+            "12": "525",
+            "11": "450"
+          },
+          "description": "CUDA major version requires minimum driver series"
+        }
+      ]
     },
     {
       "name": "datacenter-gpu-manager",

@@ -244,3 +244,88 @@ teardown() {
     count=$(jq '.dependencies | length' "$MANIFEST")
     [ "$count" -eq 14 ] || _fail "Expected 14 dependencies, got ${count}"
 }
+
+# ═══════════════════════════════════════════
+# Phase 4: Constraints, dry-run, history
+# ═══════════════════════════════════════════
+
+@test "deps-manifest: constraints reference valid dependency names" {
+    local all_names
+    all_names=$(jq -r '[.dependencies[].name] | join(" ")' "$MANIFEST")
+    local bad=""
+    local count
+    count=$(jq '.dependencies | length' "$MANIFEST")
+    for ((i = 0; i < count; i++)); do
+        local n_constraints
+        n_constraints=$(jq ".dependencies[$i].constraints // [] | length" "$MANIFEST")
+        for ((ci = 0; ci < n_constraints; ci++)); do
+            local req
+            req=$(jq -r ".dependencies[$i].constraints[$ci].requires" "$MANIFEST")
+            local found=false
+            for n in $all_names; do
+                [ "$n" = "$req" ] && found=true && break
+            done
+            if [ "$found" = false ]; then
+                local dname
+                dname=$(jq -r ".dependencies[$i].name" "$MANIFEST")
+                bad="${bad} ${dname}→${req}"
+            fi
+        done
+    done
+    [ -z "$bad" ] || _fail "Constraints reference unknown deps:${bad}"
+}
+
+@test "deps-manifest: constraints have required fields" {
+    local bad=""
+    local count
+    count=$(jq '.dependencies | length' "$MANIFEST")
+    for ((i = 0; i < count; i++)); do
+        local n_constraints
+        n_constraints=$(jq ".dependencies[$i].constraints // [] | length" "$MANIFEST")
+        for ((ci = 0; ci < n_constraints; ci++)); do
+            local req min_ver desc
+            req=$(jq -r ".dependencies[$i].constraints[$ci].requires" "$MANIFEST")
+            min_ver=$(jq -r ".dependencies[$i].constraints[$ci].minimum_version" "$MANIFEST")
+            desc=$(jq -r ".dependencies[$i].constraints[$ci].description" "$MANIFEST")
+            if [ "$req" = "null" ] || [ "$min_ver" = "null" ] || [ "$desc" = "null" ]; then
+                local dname
+                dname=$(jq -r ".dependencies[$i].name" "$MANIFEST")
+                bad="${bad} ${dname}[$ci]"
+            fi
+        done
+    done
+    [ -z "$bad" ] || _fail "Constraints missing required fields:${bad}"
+}
+
+@test "check-updates: --dry-run without --apply exits non-zero" {
+    run bash "$SCRIPT" --dry-run
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--dry-run requires --apply"* ]]
+}
+
+@test "check-updates: --help shows dry-run option" {
+    run bash "$SCRIPT" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--dry-run"* ]]
+}
+
+@test "update-history: initial file is valid JSON array" {
+    local history_file="${HPC_BENCH_ROOT}/specs/update-history.json"
+    [ -f "$history_file" ]
+    local val
+    val=$(jq 'type' "$history_file")
+    [ "$val" = '"array"' ]
+}
+
+@test "deps-manifest: cuda-toolkit has constraints for nvidia-driver" {
+    local has_constraint
+    has_constraint=$(jq '.dependencies[] | select(.name=="cuda-toolkit") | .constraints[]? | select(.requires=="nvidia-driver") | .requires' "$MANIFEST")
+    [ -n "$has_constraint" ] || _fail "cuda-toolkit should have a constraint on nvidia-driver"
+}
+
+@test "deps-manifest: cuda-toolkit constraint has CUDA 13 driver minimum" {
+    local min_13
+    min_13=$(jq -r '.dependencies[] | select(.name=="cuda-toolkit") | .constraints[] | select(.requires=="nvidia-driver") | .minimum_version["13"] // empty' "$MANIFEST")
+    [ -n "$min_13" ] || _fail "cuda-toolkit should have minimum driver for CUDA 13"
+    [ "$min_13" -ge 500 ] || _fail "CUDA 13 minimum driver ${min_13} seems too low"
+}
