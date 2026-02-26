@@ -9,11 +9,13 @@ This is a pure-Bash HPC benchmarking CLI suite (no web services, databases, or b
 | Task | Command |
 |------|---------|
 | Lint (pre-commit: shfmt + shellcheck) | `make lint` |
-| Unit tests (BATS, 98 tests) | `make test` |
+| Unit tests (BATS, 114 tests) | `make test` |
 | All quality gates | `make check` |
 | CI static checks | `make static-checks` |
 | Smoke run (bootstrap + inventory + report, ~5s) | `sudo bash scripts/run-all.sh --smoke --ci` |
 | Quick run (short benchmarks) | `sudo bash scripts/run-all.sh --quick --ci` |
+
+| Check dependency updates | `make check-updates` |
 
 See `Makefile` for all targets and `README.md` / `SKILL.md` for full documentation.
 
