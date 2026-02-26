@@ -56,7 +56,7 @@ teardown() {
 }
 
 @test "deps-manifest: all check_method values are recognized" {
-    local known="nvcr_registry dockerhub github_releases github_tags github_commits"
+    local known="nvcr_registry dockerhub github_releases github_tags github_commits nvidia_apt_repo"
     local bad=""
     local count
     count=$(jq '.dependencies | length' "$MANIFEST")
@@ -175,4 +175,72 @@ teardown() {
 @test "check-updates: --category with missing value exits non-zero" {
     run bash "$SCRIPT" --category
     [ "$status" -ne 0 ]
+}
+
+# ═══════════════════════════════════════════
+# NVIDIA package manifest validation
+# ═══════════════════════════════════════════
+
+@test "deps-manifest: nvidia_package deps with update_targets have target files" {
+    local bad=""
+    local count
+    count=$(jq '.dependencies | length' "$MANIFEST")
+    for ((i = 0; i < count; i++)); do
+        local cat targets_len
+        cat=$(jq -r ".dependencies[$i].category" "$MANIFEST")
+        if [ "$cat" = "nvidia_package" ]; then
+            targets_len=$(jq ".dependencies[$i].update_targets | length" "$MANIFEST")
+            for ((j = 0; j < targets_len; j++)); do
+                local tgt
+                tgt=$(jq -r ".dependencies[$i].update_targets[$j]" "$MANIFEST")
+                if [ ! -f "${HPC_BENCH_ROOT}/${tgt}" ]; then
+                    local name
+                    name=$(jq -r ".dependencies[$i].name" "$MANIFEST")
+                    bad="${bad} ${name}:${tgt}"
+                fi
+            done
+        fi
+    done
+    [ -z "$bad" ] || _fail "Update target files not found:${bad}"
+}
+
+@test "deps-manifest: nvidia_apt_repo deps have required source fields" {
+    local bad=""
+    local count
+    count=$(jq '.dependencies | length' "$MANIFEST")
+    for ((i = 0; i < count; i++)); do
+        local method
+        method=$(jq -r ".dependencies[$i].source.check_method" "$MANIFEST")
+        if [ "$method" = "nvidia_apt_repo" ]; then
+            local pattern extract
+            pattern=$(jq -r ".dependencies[$i].source.package_pattern" "$MANIFEST")
+            extract=$(jq -r ".dependencies[$i].source.version_extract" "$MANIFEST")
+            if [ "$pattern" = "null" ] || [ "$extract" = "null" ]; then
+                local name
+                name=$(jq -r ".dependencies[$i].name" "$MANIFEST")
+                bad="${bad} ${name}"
+            fi
+        fi
+    done
+    [ -z "$bad" ] || _fail "nvidia_apt_repo deps missing package_pattern/version_extract:${bad}"
+}
+
+@test "deps-crosscheck: nvidia-driver fallback in bootstrap.sh matches manifest" {
+    local manifest_ver
+    manifest_ver=$(jq -r '.dependencies[] | select(.name=="nvidia-driver") | .current_version' "$MANIFEST")
+    [ -n "$manifest_ver" ]
+    grep -q "nvidia-driver-${manifest_ver}-server" "${HPC_BENCH_ROOT}/scripts/bootstrap.sh"
+}
+
+@test "deps-crosscheck: CUDA fallback in bootstrap.sh matches manifest" {
+    local manifest_ver
+    manifest_ver=$(jq -r '.dependencies[] | select(.name=="cuda-toolkit") | .current_version' "$MANIFEST")
+    [ -n "$manifest_ver" ]
+    grep -q "_cuda_runtime:-${manifest_ver}" "${HPC_BENCH_ROOT}/scripts/bootstrap.sh"
+}
+
+@test "deps-manifest: total dependency count is 14" {
+    local count
+    count=$(jq '.dependencies | length' "$MANIFEST")
+    [ "$count" -eq 14 ] || _fail "Expected 14 dependencies, got ${count}"
 }

@@ -47,12 +47,14 @@ Options:
   --json            Output machine-readable JSON report to stdout
   --apply           Apply available updates to source files
   --category CAT    Check only one category:
-                      container_image, upstream_source, pre_commit_hook
+                      container_image, upstream_source, pre_commit_hook,
+                      nvidia_package
   --help            Show this help
 
 Environment:
   GITHUB_TOKEN      GitHub API token for higher rate limits (5000/hr vs 60/hr)
   NGC_API_KEY       NGC API key (currently unused; reserved for future auth)
+  NVIDIA_REPO_OS    Ubuntu version for NVIDIA apt repo (default: auto-detect or 2204)
   NO_COLOR          Disable colored output
 
 Examples:
@@ -244,6 +246,120 @@ check_github_commits() {
 }
 
 # ═══════════════════════════════════════════════════════════════════
+# NVIDIA apt repo — download once, cache for the run
+# ═══════════════════════════════════════════════════════════════════
+
+_NVIDIA_PACKAGES_CACHE=""
+
+_nvidia_repo_os() {
+    if [ -n "${NVIDIA_REPO_OS:-}" ]; then
+        echo "$NVIDIA_REPO_OS"
+        return
+    fi
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        local ver_id
+        ver_id=$(. /etc/os-release && echo "${VERSION_ID:-}")
+        if [ -n "$ver_id" ]; then
+            echo "$ver_id" | tr -d '.'
+            return
+        fi
+    fi
+    echo "2204"
+}
+
+_ensure_nvidia_packages_cache() {
+    if [ -n "$_NVIDIA_PACKAGES_CACHE" ] && [ -f "$_NVIDIA_PACKAGES_CACHE" ]; then
+        return 0
+    fi
+    local os_ver
+    os_ver=$(_nvidia_repo_os)
+    local url="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${os_ver}/x86_64/Packages"
+    _NVIDIA_PACKAGES_CACHE=$(mktemp /tmp/hpc-bench-nvidia-packages.XXXXXX)
+    if ! api_get "$url" -o "$_NVIDIA_PACKAGES_CACHE" --max-time 60; then
+        rm -f "$_NVIDIA_PACKAGES_CACHE"
+        _NVIDIA_PACKAGES_CACHE=""
+        return 1
+    fi
+    if [ ! -s "$_NVIDIA_PACKAGES_CACHE" ]; then
+        rm -f "$_NVIDIA_PACKAGES_CACHE"
+        _NVIDIA_PACKAGES_CACHE=""
+        return 1
+    fi
+    return 0
+}
+
+_cleanup_nvidia_cache() {
+    [ -n "$_NVIDIA_PACKAGES_CACHE" ] && rm -f "$_NVIDIA_PACKAGES_CACHE" || true
+}
+trap '_cleanup_nvidia_cache' EXIT
+
+check_nvidia_apt_repo() {
+    local dep_json="$1"
+
+    if ! _ensure_nvidia_packages_cache; then
+        echo '{"error":"failed to download NVIDIA apt repo index"}'
+        return 0
+    fi
+
+    local pattern version_extract
+    pattern=$(echo "$dep_json" | jq -r '.source.package_pattern')
+    version_extract=$(echo "$dep_json" | jq -r '.source.version_extract')
+
+    case "$version_extract" in
+        highest_match)
+            local latest
+            latest=$(grep -oP "$pattern" "$_NVIDIA_PACKAGES_CACHE" \
+                | grep -oP '\d+$' | sort -nr | head -1)
+            if [ -z "$latest" ]; then
+                echo '{"error":"no matching packages in repo"}'
+                return 0
+            fi
+            jq -n --arg l "$latest" '{"latest":$l}'
+            ;;
+        cuda_major_minor)
+            local latest_pkg
+            latest_pkg=$(grep -oP "$pattern" "$_NVIDIA_PACKAGES_CACHE" \
+                | sed 's/Package: cuda-toolkit-//' \
+                | sort -t- -k1,1nr -k2,2nr | head -1)
+            if [ -z "$latest_pkg" ]; then
+                echo '{"error":"no CUDA toolkit packages in repo"}'
+                return 0
+            fi
+            local latest
+            latest=$(echo "$latest_pkg" | tr '-' '.')
+            jq -n --arg l "$latest" '{"latest":$l}'
+            ;;
+        package_version)
+            local latest
+            latest=$(grep -A1 "$pattern" "$_NVIDIA_PACKAGES_CACHE" \
+                | grep '^Version:' | sed 's/^Version: //' \
+                | sed 's/^[0-9]*://' | sort -Vr | head -1)
+            if [ -z "$latest" ]; then
+                echo '{"error":"package not found in repo"}'
+                return 0
+            fi
+            jq -n --arg l "$latest" '{"latest":$l}'
+            ;;
+        nccl_version)
+            local raw
+            raw=$(grep -A1 "$pattern" "$_NVIDIA_PACKAGES_CACHE" \
+                | grep '^Version:' | sed 's/^Version: //' | sort -Vr | head -1)
+            if [ -z "$raw" ]; then
+                echo '{"error":"libnccl2 not found in repo"}'
+                return 0
+            fi
+            local latest
+            latest=$(echo "$raw" | grep -oP '^[0-9]+\.[0-9]+\.[0-9]+')
+            jq -n --arg l "$latest" --arg r "$raw" '{"latest":$l,"full_version":$r}'
+            ;;
+        *)
+            echo "{\"error\":\"unknown version_extract: ${version_extract}\"}"
+            ;;
+    esac
+}
+
+# ═══════════════════════════════════════════════════════════════════
 # Dispatch: run the right check method for a dependency
 # ═══════════════════════════════════════════════════════════════════
 
@@ -275,6 +391,9 @@ run_check() {
         github_commits)
             repo=$(echo "$dep_json" | jq -r '.source.repo')
             check_github_commits "$repo"
+            ;;
+        nvidia_apt_repo)
+            check_nvidia_apt_repo "$dep_json"
             ;;
         *)
             echo "{\"error\":\"unknown check method: ${method}\"}"
@@ -373,6 +492,36 @@ apply_precommit_hooks() {
     log_info "Updated .pre-commit-config.yaml and synced manifest"
 }
 
+apply_nvidia_package() {
+    local name="$1" current="$2" latest="$3"
+    local file="${ROOT_DIR}/scripts/bootstrap.sh"
+
+    if [ "$name" = "nvidia-driver" ]; then
+        sed -i "s|nvidia-driver-${current}-server|nvidia-driver-${latest}-server|" "$file"
+        local tmp
+        tmp=$(mktemp)
+        jq --arg v "$latest" \
+            '(.dependencies[] | select(.name=="nvidia-driver")).current_version = $v' \
+            "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+        log_info "Updated bootstrap.sh: driver fallback → nvidia-driver-${latest}-server"
+    elif [ "$name" = "cuda-toolkit" ]; then
+        sed -i "s|_cuda_runtime:-${current}|_cuda_runtime:-${latest}|g" "$file"
+        local tmp
+        tmp=$(mktemp)
+        jq --arg v "$latest" \
+            '(.dependencies[] | select(.name=="cuda-toolkit")).current_version = $v' \
+            "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+        log_info "Updated bootstrap.sh: CUDA fallback → ${latest}"
+    else
+        local tmp
+        tmp=$(mktemp)
+        jq --arg n "$name" --arg v "$latest" \
+            '(.dependencies[] | select(.name==$n)).current_version = $v' \
+            "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+        log_info "Updated manifest: ${name} → ${latest} (report-only, no file changes)"
+    fi
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════
@@ -403,7 +552,7 @@ main() {
     # Collect results as a JSON array
     local results="[]"
     local count_update=0 count_ok=0 count_failed=0
-    local apply_containers="" apply_precommit=false
+    local apply_containers="" apply_precommit=false apply_nvidia=""
 
     local i
     for ((i = 0; i < dep_count; i++)); do
@@ -455,6 +604,8 @@ main() {
                 apply_containers="${apply_containers} ${name}:${current}:${latest}"
             elif [ "$category" = "pre_commit_hook" ]; then
                 apply_precommit=true
+            elif [ "$category" = "nvidia_package" ]; then
+                apply_nvidia="${apply_nvidia} ${name}:${current}:${latest}"
             fi
         else
             count_ok=$((count_ok + 1))
@@ -520,6 +671,15 @@ main() {
             ccurrent="${entry%%:*}"
             clatest="${entry#*:}"
             apply_container_image "$cname" "$ccurrent" "$clatest"
+        done
+
+        for entry in $apply_nvidia; do
+            local nname ncurrent nlatest
+            nname="${entry%%:*}"
+            entry="${entry#*:}"
+            ncurrent="${entry%%:*}"
+            nlatest="${entry#*:}"
+            apply_nvidia_package "$nname" "$ncurrent" "$nlatest"
         done
 
         if [ "$apply_precommit" = true ]; then
