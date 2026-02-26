@@ -100,6 +100,81 @@
       "update_targets": [
         ".pre-commit-config.yaml"
       ]
+    },
+    {
+      "name": "nvidia-driver",
+      "category": "nvidia_package",
+      "current_version": "580",
+      "source": {
+        "check_method": "nvidia_apt_repo",
+        "package_pattern": "^Package: nvidia-driver-([0-9]+)$",
+        "version_extract": "highest_match"
+      },
+      "update_targets": [
+        "scripts/bootstrap.sh"
+      ],
+      "notes": "Fallback driver series in bootstrap.sh. Updated with -server suffix preserved."
+    },
+    {
+      "name": "cuda-toolkit",
+      "category": "nvidia_package",
+      "current_version": "12.0",
+      "source": {
+        "check_method": "nvidia_apt_repo",
+        "package_pattern": "^Package: cuda-toolkit-([0-9]+)-([0-9]+)$",
+        "version_extract": "cuda_major_minor"
+      },
+      "update_targets": [
+        "scripts/bootstrap.sh"
+      ],
+      "notes": "Fallback CUDA runtime version in bootstrap.sh (_cuda_runtime:-M.N)."
+    },
+    {
+      "name": "datacenter-gpu-manager",
+      "category": "nvidia_package",
+      "current_version": "3.3.9",
+      "source": {
+        "check_method": "nvidia_apt_repo",
+        "package_pattern": "^Package: datacenter-gpu-manager$",
+        "version_extract": "package_version"
+      },
+      "update_targets": [],
+      "notes": "Bootstrap installs latest. Report-only; current_version tracks latest known."
+    },
+    {
+      "name": "libnccl2",
+      "category": "nvidia_package",
+      "current_version": "2.29.3",
+      "source": {
+        "check_method": "nvidia_apt_repo",
+        "package_pattern": "^Package: libnccl2$",
+        "version_extract": "nccl_version"
+      },
+      "update_targets": [],
+      "notes": "Bootstrap installs latest. Version stripped of CUDA suffix (e.g. 2.29.3-1+cuda13.1 → 2.29.3)."
+    },
+    {
+      "name": "nvidia-fabricmanager",
+      "category": "nvidia_package",
+      "current_version": "575",
+      "source": {
+        "check_method": "nvidia_apt_repo",
+        "package_pattern": "^Package: nvidia-fabricmanager-([0-9]+)$",
+        "version_extract": "highest_match"
+      },
+      "update_targets": [],
+      "notes": "Bootstrap dynamically matches driver major. Report-only."
+    },
+    {
+      "name": "nvidia-container-toolkit",
+      "category": "nvidia_package",
+      "current_version": "v1.18.2",
+      "source": {
+        "check_method": "github_releases",
+        "repo": "NVIDIA/nvidia-container-toolkit"
+      },
+      "update_targets": [],
+      "notes": "Bootstrap installs from stable repo. Report-only."
     }
   ]
 }
