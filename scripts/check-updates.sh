@@ -315,8 +315,9 @@ apply_container_image() {
         old_alt=$(jq -r '.dependencies[] | select(.name=="hpc-benchmarks") | .current_alt_version' "$MANIFEST")
 
         # Rotate: current primary → alt, latest → primary
-        sed -i "s|hpc-benchmarks:${current}\"|hpc-benchmarks:${latest}\"|" "$file"
-        sed -i "s|hpc-benchmarks:${old_alt}\"|hpc-benchmarks:${current}\"|" "$file"
+        # Match version between colon and closing brace-quote: :VER}"
+        sed -i "s|hpc-benchmarks:${current}}|hpc-benchmarks:${latest}}|" "$file"
+        sed -i "s|hpc-benchmarks:${old_alt}}|hpc-benchmarks:${current}}|" "$file"
 
         # Update manifest
         local tmp
@@ -331,7 +332,7 @@ apply_container_image() {
 
     if [ "$name" = "intel-hpckit" ]; then
         local file="${ROOT_DIR}/scripts/hpl-cpu.sh"
-        sed -i "s|intel/hpckit:latest|intel/hpckit:${latest}|" "$file"
+        sed -i "s|intel/hpckit:[^\"]*|intel/hpckit:${latest}|" "$file"
 
         local tmp
         tmp=$(mktemp)
