@@ -48,16 +48,19 @@ bench/
 │   ├── security-scan.sh      # Phase 4: SSH audit, services, SUID, kernel
 │   ├── report.sh             # Phase 5: generates report.md from results
 │   ├── run-all.sh            # Orchestrator (runs all phases)
-│   └── ci-static-checks.sh   # CI-only: shellcheck + syntax checks
+│   ├── ci-static-checks.sh   # CI-only: shellcheck + syntax checks
+│   └── check-updates.sh      # Dependency update checker (not a module)
 ├── specs/
 │   ├── modules.json          # Module manifest (single source of truth)
-│   └── hardware-specs.json   # GPU spec lookup data
+│   ├── dependencies.json     # Tracked external dependency versions
+│   └── update-history.json   # Dependency update audit log
 ├── src/                       # Bundled sources (gpu-burn, nccl-tests, STREAM)
 ├── tests/
 │   ├── helpers.bash           # Shared BATS test helpers
 │   ├── common_helpers.bats    # Unit tests for lib/common.sh
 │   ├── report_helpers.bats    # Unit tests for lib/report-common.sh
-│   └── module_integration.bats # Integration tests (syntax, manifest, source-gate)
+│   ├── module_integration.bats # Integration tests (syntax, manifest, source-gate)
+│   └── check_updates.bats    # Tests for dependency checker + manifest
 ├── .editorconfig              # Formatting rules
 ├── .pre-commit-config.yaml    # Pre-commit hooks (shfmt, shellcheck)
 ├── Makefile                   # Quality gates: make lint, make test, make smoke
@@ -118,6 +121,7 @@ bench/
 - `make check` — runs lint + test + static checks.
 - `make smoke` — runs `run-all.sh --smoke` end-to-end.
 - `make quick` — runs `run-all.sh --quick` end-to-end.
+- `make check-updates` — checks 14 tracked dependencies for upstream updates.
 
 ### JSON contract
 
@@ -180,3 +184,6 @@ Things an AI agent should **never** do:
 | Dev conventions, JSON contract, config guide | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | Contributor guidelines | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Quality gates | [Makefile](Makefile) |
+| Dependency version manifest | [specs/dependencies.json](specs/dependencies.json) |
+| Dependency update checker | [scripts/check-updates.sh](scripts/check-updates.sh) |
+| Dependency update history | [specs/update-history.json](specs/update-history.json) |

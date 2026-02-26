@@ -191,6 +191,7 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 │   ├── bootstrap.sh     # Bootstrap and dependency install
 │   ├── run-all.sh       # Master orchestrator (all phases)
 │   ├── report.sh        # Report generator
+│   ├── check-updates.sh # Dependency update checker (see below)
 │   ├── inventory.sh     # General / CPU inventory
 │   ├── gpu-inventory.sh
 │   ├── topology.sh
@@ -211,10 +212,15 @@ HPC_RESULTS_DIR=/path/to/results bash scripts/report.sh
 │   ├── filesystem-diag.sh
 │   ├── thermal-power.sh
 │   └── security-scan.sh
-└── src/                  # Bundled benchmark sources
-    ├── stream.c          # STREAM memory benchmark
-    ├── gpu-burn/         # GPU burn-in (CUDA)
-    └── nccl-tests/       # Minimal NCCL test binaries
+├── specs/
+│   ├── modules.json      # Module manifest (single source of truth)
+│   ├── dependencies.json # Tracked external dependency versions
+│   └── update-history.json # Dependency update audit log
+├── src/                  # Bundled benchmark sources
+│   ├── stream.c          # STREAM memory benchmark
+│   ├── gpu-burn/         # GPU burn-in (CUDA)
+│   └── nccl-tests/       # Minimal NCCL test binaries
+└── tests/                # BATS unit and integration tests
 ```
 
 ## Linting and pre-commit
@@ -243,6 +249,22 @@ make static-checks
 - Static gate runs `scripts/ci-static-checks.sh` (`bash -n` + `pre-commit run --all-files`)
 - Ubuntu VM job runs `run-all.sh --smoke --ci` and `run-all.sh --quick --ci`
 - Optional GPU job runs on self-hosted runners labeled `self-hosted,linux,x64,gpu,nvidia` and is enabled by repo variable `HPC_ENABLE_GPU_CI=1`
+- **Dependency updates:** `.github/workflows/dependency-update.yml` runs weekly (Mondays 09:00 UTC) to check all 14 tracked dependencies for updates, apply them, validate with lint/tests/smoke, and open a PR. Manual trigger: `gh workflow run "Dependency Update Check"`. See **Dependency tracking** below.
+- **Dependabot:** `.github/dependabot.yml` auto-updates GitHub Actions versions monthly.
+
+## Dependency tracking
+
+The suite tracks 14 external dependencies (container images, NVIDIA packages, upstream benchmark sources, pre-commit hooks) in `specs/dependencies.json`. Check for updates:
+
+```bash
+make check-updates                                    # Human-readable report
+bash scripts/check-updates.sh --json                  # Machine-readable JSON
+bash scripts/check-updates.sh --apply --dry-run       # Preview what would change
+bash scripts/check-updates.sh --apply                 # Apply updates to source files
+bash scripts/check-updates.sh --category nvidia_package  # Check one category
+```
+
+The checker queries nvcr.io, Docker Hub, GitHub, and the NVIDIA apt repo. It validates CUDA↔driver compatibility constraints before applying, runs `bash -n` on modified files after applying, and logs all changes to `specs/update-history.json`.
 
 ## Concurrency and locking
 
