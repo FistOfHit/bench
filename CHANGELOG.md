@@ -4,6 +4,23 @@ All notable changes to the HPC Bench Suite are documented here. Version number i
 
 ## Version History
 
+### Dependency Update System (2026-02-26)
+
+1. **New: `scripts/check-updates.sh`** — Automated dependency update checker.
+   - Tracks 14 external dependencies across 4 categories: container images (hpc-benchmarks, intel-hpckit), NVIDIA packages (driver, CUDA toolkit, DCGM, NCCL, Fabric Manager, Container Toolkit), upstream benchmark sources (gpu-burn, nccl-tests, nvbandwidth), and pre-commit hooks.
+   - Queries nvcr.io registry, Docker Hub, GitHub API, and NVIDIA apt repo.
+   - Modes: `--json` (machine-readable), `--apply` (update source files), `--apply --dry-run` (preview), `--category` (filter).
+   - CUDA↔driver compatibility constraints validated before applying updates.
+   - Post-apply validation (`bash -n` on `.sh`, `jq` on `.json`) with auto-revert on failure.
+   - Update history logged to `specs/update-history.json`.
+2. **New: `specs/dependencies.json`** — Version manifest (single source of truth for tracked dependencies).
+3. **New: `specs/update-history.json`** — Audit log for dependency updates.
+4. **New: `.github/workflows/dependency-update.yml`** — Weekly GitHub Actions workflow (Mondays 09:00 UTC) that checks for updates, applies them, validates with lint/tests/smoke, and opens a PR. Optional GPU validation on self-hosted runner.
+5. **New: `.github/dependabot.yml`** — Monthly auto-updates for GitHub Actions versions.
+6. **New: `tests/check_updates.bats`** — 28 BATS tests for manifest schema, cross-checks, constraints, and script behavior.
+7. **Makefile** — Added `check-updates` target.
+8. **`.pre-commit-config.yaml`** — Updated hooks: pre-commit-hooks v4.5.0→v6.0.0, shfmt v3.8.0-1→v3.12.0-2, shellcheck-py v0.9.0.6→v0.11.0.1.
+
 ### V1.10 Changes (2026-02-14)
 
 1. **scripts/run-all.sh** — Added CI mode:

@@ -1,4 +1,4 @@
-.PHONY: help lint shellcheck test static-checks check smoke quick ci-smoke ci-quick report-html version
+.PHONY: help lint shellcheck test static-checks check smoke quick ci-smoke ci-quick report-html check-updates version
 
 # ── Meta ──
 
@@ -18,6 +18,9 @@ help:
 	@echo "  make ci-smoke       Run smoke with --ci (compact output for CI)"
 	@echo "  make ci-quick       Run quick with --ci (compact output for CI)"
 	@echo "  make report-html    Generate optional HTML report from HPC_RESULTS_DIR (default /var/log/hpc-bench/results)"
+	@echo ""
+	@echo "Maintenance:"
+	@echo "  make check-updates  Check tracked dependencies for newer versions"
 	@echo ""
 	@echo "Info:"
 	@echo "  make version        Show suite version"
@@ -65,6 +68,13 @@ report-html:
 	@results="$${HPC_RESULTS_DIR:-/var/log/hpc-bench/results}"; \
 	if [ ! -d "$$results" ]; then echo "Results dir not found: $$results. Run the suite first or set HPC_RESULTS_DIR."; exit 1; fi; \
 	python3 reporting/generate_html_report.py -i "$$results" -o "$$results/report.html"
+
+# ── Maintenance ──
+
+check-updates:
+	@command -v jq >/dev/null 2>&1 || { echo "jq not found."; exit 1; }
+	@command -v curl >/dev/null 2>&1 || { echo "curl not found."; exit 1; }
+	bash scripts/check-updates.sh
 
 # ── Info ──
 
