@@ -68,7 +68,7 @@
     {
       "name": "pre-commit-hooks",
       "category": "pre_commit_hook",
-      "current_version": "v4.5.0",
+      "current_version": "v6.0.0",
       "source": {
         "check_method": "github_releases",
         "repo": "pre-commit/pre-commit-hooks"
@@ -80,7 +80,7 @@
     {
       "name": "pre-commit-shfmt",
       "category": "pre_commit_hook",
-      "current_version": "v3.8.0-1",
+      "current_version": "v3.12.0-2",
       "source": {
         "check_method": "github_tags",
         "repo": "scop/pre-commit-shfmt"
@@ -92,7 +92,7 @@
     {
       "name": "shellcheck-py",
       "category": "pre_commit_hook",
-      "current_version": "v0.9.0.6",
+      "current_version": "v0.11.0.1",
       "source": {
         "check_method": "github_tags",
         "repo": "shellcheck-py/shellcheck-py"
