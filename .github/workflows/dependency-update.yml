@@ -139,7 +139,7 @@ jobs:
 
       - name: Upload update report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dependency-update-report
           path: update-report.json
@@ -181,7 +181,7 @@ jobs:
 
       - name: Upload GPU results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: gpu-validation-results
           path: /var/log/hpc-bench/results
