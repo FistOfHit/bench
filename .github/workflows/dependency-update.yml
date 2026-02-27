@@ -22,7 +22,7 @@ jobs:
       pr_branch: ${{ steps.pr.outputs.branch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -152,7 +152,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, gpu, nvidia]
     steps:
       - name: Checkout update branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.check-and-pr.outputs.pr_branch }}
 
