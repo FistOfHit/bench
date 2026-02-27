@@ -2,7 +2,7 @@
 
 A comprehensive benchmarking and diagnostics suite for high-performance computing (HPC) systems. Runs hardware discovery, GPU/CPU/network/storage benchmarks, and produces structured JSON results plus a markdown report.
 
-**Version:** 1.10 (see [VERSION](VERSION))
+**Version:** 1.11 (see [VERSION](VERSION))
 
 ## Features
 
@@ -91,6 +91,48 @@ ssh-keygen -R <host-or-ip>
 # Example:
 ssh-keygen -R 38.128.232.215
 ```
+
+### Portable / air-gapped run
+
+For datacenters with no network or minimal tooling, build a **portable bundle** in the office (where network and tools are available), then copy it to a USB and run on the server without any installs or downloads. **Full guide:** [docs/PORTABLE-BUNDLE.md](docs/PORTABLE-BUNDLE.md).
+
+#### Single file for USB (one `.run` file)
+
+To build **one executable file** you can put on a USB and run on the server with no extract step:
+
+1. **Build** (office, from repo root; requires [makeself](https://github.com/megastep/makeself) on the build host, e.g. `apt install makeself`):
+   ```bash
+   bash scripts/build-portable-bundle.sh --makeself
+   ```
+   Output: `dist/hpc-bench-portable-<VERSION>-linux-<arch>.run` (and the `.tar.gz`).
+
+2. **On target:** Copy the `.run` to the server (e.g. via USB), then:
+   ```bash
+   sh hpc-bench-portable-1.11-linux-x86_64.run           # full run
+   sh hpc-bench-portable-1.11-linux-x86_64.run --quick   # short benchmarks
+   sh hpc-bench-portable-1.11-linux-x86_64.run --smoke   # bootstrap + inventory + report only
+   ```
+   The first run extracts the bundle to `./hpc-bench-portable-.../` and runs the suite. To run again without re-extracting: `cd hpc-bench-portable-... && sudo ./run.sh --quick`.
+
+#### Tarball (extract then run)
+
+1. **Build the bundle** (on a machine with network, from the repo root):
+   ```bash
+   bash scripts/build-portable-bundle.sh
+   ```
+   This creates `dist/hpc-bench-portable-<VERSION>-linux-<arch>.tar.gz`. The script downloads a static `jq` binary and optionally builds STREAM (if `gcc` is present). Set `HPC_BUNDLE_SKIP_STREAM=1` to skip STREAM; set `HPC_BUNDLE_OUTPUT_DIR` to change the output directory.
+
+2. **On the target server:** Copy the tarball (e.g. via USB), extract, then run:
+   ```bash
+   tar xzf hpc-bench-portable-1.11-linux-x86_64.tar.gz
+   cd hpc-bench-portable-1.11-linux-x86_64
+   sudo ./run.sh          # full run
+   sudo ./run.sh --quick  # short benchmarks
+   sudo ./run.sh --smoke  # bootstrap + inventory + report only
+   ```
+   No network or package installs are required on the target. The bundle includes `jq`; the launcher sets `HPC_PORTABLE=1` so bootstrap skips connectivity checks and installs. If the bundle was built with STREAM, the memory benchmark uses the pre-built binary; otherwise it uses the bundled source and compiles on target when `gcc` is available.
+
+3. **Target requirements:** Ubuntu (or similar) with Bash 4+ and standard userland (awk, grep, timeout). GPU benchmarks still require the NVIDIA driver and CUDA (and optionally gcc/make) on the target; if missing, those modules skip as usual.
 
 Results go to `/var/log/hpc-bench/results/` by default when run as root (override with `HPC_RESULTS_DIR`). When run as non-root, results go to `$HOME/.local/var/hpc-bench/results`. See **Viewing results** below for where to find the report and logs.
 

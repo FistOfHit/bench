@@ -12,23 +12,40 @@ STREAM_DIR="${HPC_WORK_DIR}/stream"
 mkdir -p "$STREAM_DIR"
 register_cleanup "$STREAM_DIR"
 
-# ── Download and compile STREAM ──
+# ── Download and compile STREAM (or use pre-built in portable mode) ──
 STREAM_SRC="${STREAM_DIR}/stream.c"
 STREAM_BIN="${STREAM_DIR}/stream"
 NPROCS=$(nproc)
 
+# Portable bundle: use pre-built binary if present
+if [ "${HPC_PORTABLE:-0}" = "1" ] && [ -x "${HPC_BENCH_ROOT}/bin/stream" ]; then
+    STREAM_BIN="${HPC_BENCH_ROOT}/bin/stream"
+    log_info "Using pre-built STREAM from bundle (portable mode)"
+fi
+
 if [ ! -x "$STREAM_BIN" ]; then
-    # Prefer latest from online; fallback to bundled STREAM source
     BUNDLED_SRC="${HPC_BENCH_ROOT}/src/stream.c"
-    if curl -fsSL "https://www.cs.virginia.edu/stream/FTP/Code/stream.c" -o "$STREAM_SRC" 2>/dev/null && [ -s "$STREAM_SRC" ]; then
-        log_info "Using STREAM source from upstream (download)"
-    elif [ -f "$BUNDLED_SRC" ]; then
-        log_info "Using bundled STREAM source (download failed or offline)"
-        cp "$BUNDLED_SRC" "$STREAM_SRC"
+    # Portable mode: no download; use only bundled source. Otherwise try upstream then fallback.
+    if [ "${HPC_PORTABLE:-0}" = "1" ]; then
+        if [ -f "$BUNDLED_SRC" ]; then
+            log_info "Using bundled STREAM source (portable mode, no download)"
+            cp "$BUNDLED_SRC" "$STREAM_SRC"
+        else
+            log_error "Failed to obtain STREAM source (no bundled copy in portable mode)"
+            echo '{"error":"STREAM source unavailable"}' | emit_json "stream-bench" "error"
+            exit 1
+        fi
     else
-        log_error "Failed to obtain STREAM source (no bundled copy, download failed)"
-        echo '{"error":"STREAM source unavailable"}' | emit_json "stream-bench" "error"
-        exit 1
+        if curl -fsSL "https://www.cs.virginia.edu/stream/FTP/Code/stream.c" -o "$STREAM_SRC" 2>/dev/null && [ -s "$STREAM_SRC" ]; then
+            log_info "Using STREAM source from upstream (download)"
+        elif [ -f "$BUNDLED_SRC" ]; then
+            log_info "Using bundled STREAM source (download failed or offline)"
+            cp "$BUNDLED_SRC" "$STREAM_SRC"
+        else
+            log_error "Failed to obtain STREAM source (no bundled copy, download failed)"
+            echo '{"error":"STREAM source unavailable"}' | emit_json "stream-bench" "error"
+            exit 1
+        fi
     fi
 
     # Compile with optimization

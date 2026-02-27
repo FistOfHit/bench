@@ -17,8 +17,10 @@ This is a pure-Bash HPC benchmarking CLI suite (no web services, databases, or b
 
 | Check dependency updates | `make check-updates` |
 | Preview dependency updates | `bash scripts/check-updates.sh --apply --dry-run` |
+| Build portable bundle (tarball) | `bash scripts/build-portable-bundle.sh` |
+| Build single .run file (for USB) | `bash scripts/build-portable-bundle.sh --makeself` (requires makeself on build host) |
 
-See `Makefile` for all targets and `README.md` / `SKILL.md` for full documentation.
+See `Makefile` for all targets and `README.md` / `SKILL.md` for full documentation. **Portable bundle (tarball or single .run):** full how-to, single-file steps, build options, and agent reference in [docs/PORTABLE-BUNDLE.md](docs/PORTABLE-BUNDLE.md).
 
 ### Dependency update system
 

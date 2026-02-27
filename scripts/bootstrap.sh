@@ -157,16 +157,21 @@ if [ "$CHECK_ONLY" = true ]; then
 fi
 
 # ── Connectivity preflight ──
-# Tries multiple hosts in case one is blocked by firewall/proxy. Under sudo, proxy env (HTTP_PROXY/HTTPS_PROXY) may not be set.
+# Portable mode: skip installs and connectivity check (run from bundle with no network).
 HAS_INTERNET=false
-log_info "Checking internet/repository connectivity..."
-for _url in https://google.com https://archive.ubuntu.com https://mirror.centos.org https://cloudflare.com https://1.1.1.1; do
-    if curl -sI --connect-timeout 5 "$_url" &>/dev/null; then
-        HAS_INTERNET=true
-        log_info "Internet connectivity: OK (reachable: $_url)"
-        break
-    fi
-done
+if [ "${HPC_PORTABLE:-0}" = "1" ]; then
+    log_info "Portable mode: skipping connectivity check and package installation"
+else
+    # Tries multiple hosts in case one is blocked by firewall/proxy. Under sudo, proxy env (HTTP_PROXY/HTTPS_PROXY) may not be set.
+    log_info "Checking internet/repository connectivity..."
+    for _url in https://google.com https://archive.ubuntu.com https://mirror.centos.org https://cloudflare.com https://1.1.1.1; do
+        if curl -sI --connect-timeout 5 "$_url" &>/dev/null; then
+            HAS_INTERNET=true
+            log_info "Internet connectivity: OK (reachable: $_url)"
+            break
+        fi
+    done
+fi
 if [ "$HAS_INTERNET" = false ]; then
     log_warn "No internet/repository access — will skip package installation"
     log_warn "Pre-install packages manually or use --check-only to see what's needed"

@@ -21,6 +21,23 @@ All notable changes to the HPC Bench Suite are documented here. Version number i
 7. **Makefile** — Added `check-updates` target.
 8. **`.pre-commit-config.yaml`** — Updated hooks: pre-commit-hooks v4.5.0→v6.0.0, shfmt v3.8.0-1→v3.12.0-2, shellcheck-py v0.9.0.6→v0.11.0.1.
 
+### V1.11 Changes (2026-02-27)
+
+1. **Portable bundle (air-gapped / no-network runs):**
+   - **New: `scripts/build-portable-bundle.sh`** — Builds a tarball for USB deployment: copies repo tree, downloads static jq (jqlang/jq), optionally pre-builds STREAM, writes `run.sh` launcher, creates `dist/hpc-bench-portable-<VERSION>-linux-<arch>.tar.gz`. Env: `HPC_BUNDLE_OUTPUT_DIR`, `HPC_BUNDLE_ARCH`, `HPC_BUNDLE_SKIP_STREAM`.
+   - **Launcher `run.sh`** (in bundle) sets `HPC_BENCH_ROOT`, `PATH=$ROOT/bin:$PATH`, `HPC_PORTABLE=1`, execs `run-all.sh`. No network or package installs required on target.
+   - **Bootstrap:** When `HPC_PORTABLE=1`, skips connectivity check and all package installation; hardware detection and JSON emit only.
+   - **stream-bench.sh:** When `HPC_PORTABLE=1`, uses pre-built `bin/stream` if present; never downloads STREAM (uses only bundled `src/stream.c` when compiling on target).
+2. **Single-file packaging (makeself):**
+   - **`scripts/build-portable-bundle.sh --makeself`** (or `HPC_BUNDLE_MAKESELF=1`) — Produces a single `.run` file (makeself self-extracting archive with `--notemp`, startup `./run.sh`). Requires makeself on build host (e.g. `apt install makeself`). User can copy one file to USB and run `sh hpc-bench-portable-....run` or `sh ...run --quick` on target.
+3. **Documentation:**
+   - **README.md** — "Portable / air-gapped run" with single-file and tarball flows; link to full guide.
+   - **docs/PORTABLE-BUNDLE.md** — New: purpose, how to make single file, quick example, build options, single-file (makeself) build, run from single file, bundle contents, portable-mode behavior, target requirements, troubleshooting, "For agents / AI" reference.
+   - **AGENTS.md** — Quick reference: build portable bundle (tarball), build single .run file; link to PORTABLE-BUNDLE.md.
+   - **SKILL.md** — Key files: portable bundle (tarball + single .run for USB).
+4. **VERSION** — Bumped to `1.11`.
+5. **examples/report.md** — Suite version in sample report updated to 1.11.
+
 ### V1.10 Changes (2026-02-14)
 
 1. **scripts/run-all.sh** — Added CI mode:

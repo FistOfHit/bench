@@ -182,6 +182,7 @@ Things an AI agent should **never** do:
 | Entry points | [scripts/bootstrap.sh](scripts/bootstrap.sh), [scripts/run-all.sh](scripts/run-all.sh) |
 | GPU spec lookup | [lib/common.sh](lib/common.sh) `lookup_gpu_spec`, [specs/hardware-specs.json](specs/hardware-specs.json) |
 | Dev conventions, JSON contract, config guide | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
+| Portable bundle (tarball + single .run for USB, air-gapped, agent reference) | [docs/PORTABLE-BUNDLE.md](docs/PORTABLE-BUNDLE.md) |
 | Contributor guidelines | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Quality gates | [Makefile](Makefile) |
 | Dependency version manifest | [specs/dependencies.json](specs/dependencies.json) |
