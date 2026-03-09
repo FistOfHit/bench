@@ -5,8 +5,8 @@
     {
       "name": "hpc-benchmarks",
       "category": "container_image",
-      "current_version": "24.03",
-      "current_alt_version": "23.10",
+      "current_version": "25.09",
+      "current_alt_version": "24.03",
       "source": {
         "check_method": "nvcr_registry",
         "registry": "nvcr.io",
@@ -21,7 +21,7 @@
     {
       "name": "intel-hpckit",
       "category": "container_image",
-      "current_version": "latest",
+      "current_version": "2024.2.0-devel-ubuntu22.04",
       "source": {
         "check_method": "dockerhub",
         "repo": "intel/hpckit",
@@ -118,7 +118,7 @@
     {
       "name": "cuda-toolkit",
       "category": "nvidia_package",
-      "current_version": "12.0",
+      "current_version": "13.1",
       "source": {
         "check_method": "nvidia_apt_repo",
         "package_pattern": "^Package: cuda-toolkit-([0-9]+)-([0-9]+)$",
@@ -155,7 +155,7 @@
     {
       "name": "libnccl2",
       "category": "nvidia_package",
-      "current_version": "2.29.3",
+      "current_version": "2.29.7",
       "source": {
         "check_method": "nvidia_apt_repo",
         "package_pattern": "^Package: libnccl2$",

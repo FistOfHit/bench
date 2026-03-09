@@ -1,0 +1,208 @@
+{
+  "check_date": "2026-03-09T09:54:42Z",
+  "suite_version": "1.110",
+  "summary": {
+    "total": 14,
+    "updates_available": 4,
+    "up_to_date": 10,
+    "check_failed": 0,
+    "constraint_warnings": 0
+  },
+  "dependencies": [
+    {
+      "name": "hpc-benchmarks",
+      "category": "container_image",
+      "current_version": "24.03",
+      "latest_version": "25.09",
+      "update_available": true,
+      "update_targets": [
+        "conf/defaults.sh"
+      ],
+      "check_detail": {
+        "latest": "25.09"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "intel-hpckit",
+      "category": "container_image",
+      "current_version": "latest",
+      "latest_version": "2024.2.0-devel-ubuntu22.04",
+      "update_available": true,
+      "update_targets": [
+        "scripts/hpl-cpu.sh"
+      ],
+      "check_detail": {
+        "latest": "2024.2.0-devel-ubuntu22.04"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "gpu-burn",
+      "category": "upstream_source",
+      "current_version": "HEAD",
+      "latest_version": "671f4be9",
+      "update_available": false,
+      "update_targets": [],
+      "check_detail": {
+        "latest": "671f4be9",
+        "commit_date": "2025-11-04T16:28:59Z"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "nccl-tests",
+      "category": "upstream_source",
+      "current_version": "HEAD",
+      "latest_version": "v2.18.0",
+      "update_available": false,
+      "update_targets": [],
+      "check_detail": {
+        "latest": "v2.18.0"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "nvbandwidth",
+      "category": "upstream_source",
+      "current_version": "HEAD",
+      "latest_version": "v0.8",
+      "update_available": false,
+      "update_targets": [],
+      "check_detail": {
+        "latest": "v0.8",
+        "published": "2025-04-15T01:15:17Z"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "pre-commit-hooks",
+      "category": "pre_commit_hook",
+      "current_version": "v6.0.0",
+      "latest_version": "v6.0.0",
+      "update_available": false,
+      "update_targets": [
+        ".pre-commit-config.yaml"
+      ],
+      "check_detail": {
+        "latest": "v6.0.0",
+        "published": "2025-08-09T19:31:54Z"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "pre-commit-shfmt",
+      "category": "pre_commit_hook",
+      "current_version": "v3.12.0-2",
+      "latest_version": "v3.12.0-2",
+      "update_available": false,
+      "update_targets": [
+        ".pre-commit-config.yaml"
+      ],
+      "check_detail": {
+        "latest": "v3.12.0-2"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "shellcheck-py",
+      "category": "pre_commit_hook",
+      "current_version": "v0.11.0.1",
+      "latest_version": "v0.11.0.1",
+      "update_available": false,
+      "update_targets": [
+        ".pre-commit-config.yaml"
+      ],
+      "check_detail": {
+        "latest": "v0.11.0.1"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "nvidia-driver",
+      "category": "nvidia_package",
+      "current_version": "580",
+      "latest_version": "580",
+      "update_available": false,
+      "update_targets": [
+        "scripts/bootstrap.sh"
+      ],
+      "check_detail": {
+        "latest": "580"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "cuda-toolkit",
+      "category": "nvidia_package",
+      "current_version": "12.0",
+      "latest_version": "13.1",
+      "update_available": true,
+      "update_targets": [
+        "scripts/bootstrap.sh"
+      ],
+      "check_detail": {
+        "latest": "13.1"
+      },
+      "constraint_warnings": [
+        {
+          "requires": "nvidia-driver",
+          "minimum": "580",
+          "current": "580",
+          "status": "ok",
+          "description": "CUDA major version requires minimum driver series"
+        }
+      ]
+    },
+    {
+      "name": "datacenter-gpu-manager",
+      "category": "nvidia_package",
+      "current_version": "3.3.9",
+      "latest_version": "3.3.9",
+      "update_available": false,
+      "update_targets": [],
+      "check_detail": {
+        "latest": "3.3.9"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "libnccl2",
+      "category": "nvidia_package",
+      "current_version": "2.29.3",
+      "latest_version": "2.29.7",
+      "update_available": true,
+      "update_targets": [],
+      "check_detail": {
+        "latest": "2.29.7",
+        "full_version": "2.29.7-1+cuda13.2"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "nvidia-fabricmanager",
+      "category": "nvidia_package",
+      "current_version": "575",
+      "latest_version": "575",
+      "update_available": false,
+      "update_targets": [],
+      "check_detail": {
+        "latest": "575"
+      },
+      "constraint_warnings": []
+    },
+    {
+      "name": "nvidia-container-toolkit",
+      "category": "nvidia_package",
+      "current_version": "v1.18.2",
+      "latest_version": "v1.18.2",
+      "update_available": false,
+      "update_targets": [],
+      "check_detail": {
+        "latest": "v1.18.2",
+        "published": "2026-01-23T13:16:23Z"
+      },
+      "constraint_warnings": []
+    }
+  ]
+}

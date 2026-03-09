@@ -367,8 +367,8 @@ if [ "$HAS_GPU" = true ] && [ "$HAS_INTERNET" = true ] && ! command -v nvcc &>/d
     _cuda_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
     # Avoid grep -P; parse from nvidia-smi banner instead.
     _cuda_runtime=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
-    _cuda_major=$(echo "${_cuda_runtime:-12.0}" | cut -d. -f1)
-    _cuda_minor=$(echo "${_cuda_runtime:-12.0}" | cut -d. -f2)
+    _cuda_major=$(echo "${_cuda_runtime:-13.1}" | cut -d. -f1)
+    _cuda_minor=$(echo "${_cuda_runtime:-13.1}" | cut -d. -f2)
     _cuda_installed=false
     log_info "Driver CUDA runtime: ${_cuda_runtime:-unknown} — looking for matching toolkit..."
     # Try exact major-minor match first, then major-only, then any available (newest first)

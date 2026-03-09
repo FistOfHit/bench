@@ -62,7 +62,7 @@ log_info "HPL timeout: ${HPL_TIMEOUT}s (dynamic based on ${total_mem_gb}GB RAM),
 hpl_output=""
 hpl_method="none"
 hpl_skip_note="HPL not available"
-HPL_CPU_IMAGE="intel/hpckit:latest"
+HPL_CPU_IMAGE="intel/hpckit:2024.2.0-devel-ubuntu22.04"
 CONTAINER_CMD=$(detect_container_runtime)
 hpl_image_ready=true
 

@@ -41,8 +41,8 @@
 : "${STREAM_ITERS_FULL:=20}"              # Iterations in full mode
 
 # ── Container images ──
-: "${HPL_IMAGE:=nvcr.io/nvidia/hpc-benchmarks:24.03}"
-: "${HPL_IMAGE_ALT:=nvcr.io/nvidia/hpc-benchmarks:23.10}"
+: "${HPL_IMAGE:=nvcr.io/nvidia/hpc-benchmarks:25.09}"
+: "${HPL_IMAGE_ALT:=nvcr.io/nvidia/hpc-benchmarks:24.03}"
 
 # ── Load local overrides if present (gitignored) ──
 _local_conf="${HPC_BENCH_ROOT}/conf/local.sh"
